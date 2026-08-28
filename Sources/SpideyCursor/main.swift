@@ -27,6 +27,7 @@ enum HeroPose {
     case idle
     case firing
     case swinging
+    case landing
     case hanging
 }
 
@@ -59,8 +60,12 @@ private func easeInOutCubic(_ value: CGFloat) -> CGFloat {
 
 enum HeroRenderer {
     private static let ink = NSColor(calibratedRed: 0.035, green: 0.03, blue: 0.09, alpha: 1)
-    private static let red = NSColor(calibratedRed: 1, green: 0.18, blue: 0.28, alpha: 1)
-    private static let blue = NSColor(calibratedRed: 0.13, green: 0.27, blue: 0.9, alpha: 1)
+    private static let red = NSColor(calibratedRed: 0.94, green: 0.075, blue: 0.13, alpha: 1)
+    private static let redLight = NSColor(calibratedRed: 1, green: 0.29, blue: 0.31, alpha: 1)
+    private static let redDark = NSColor(calibratedRed: 0.58, green: 0.018, blue: 0.07, alpha: 1)
+    private static let blue = NSColor(calibratedRed: 0.045, green: 0.18, blue: 0.56, alpha: 1)
+    private static let blueLight = NSColor(calibratedRed: 0.12, green: 0.38, blue: 0.88, alpha: 1)
+    private static let blueDark = NSColor(calibratedRed: 0.018, green: 0.07, blue: 0.25, alpha: 1)
 
     static func draw(style: HeroStyle, pose: HeroPose = .idle, webAngle: CGFloat = .pi / 3) {
         if pose == .hanging {
@@ -84,62 +89,414 @@ enum HeroRenderer {
         path.stroke()
     }
 
+    private static func gradientFillStroke(_ path: NSBezierPath, colors: [NSColor], angle: CGFloat, width: CGFloat = 2.2) {
+        NSGraphicsContext.saveGraphicsState()
+        path.addClip()
+        NSGradient(colors: colors)?.draw(in: path.bounds, angle: angle)
+        NSGraphicsContext.restoreGraphicsState()
+        ink.setStroke()
+        path.lineWidth = width
+        path.lineJoinStyle = .round
+        path.lineCapStyle = .round
+        path.stroke()
+    }
+
     private static func rounded(_ rect: CGRect, radius: CGFloat) -> NSBezierPath {
         NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
     }
 
-    private static func eye(_ rect: CGRect, rotation: CGFloat = 0) {
+    private static func eye(_ rect: CGRect, mirrored: Bool = false, rotation: CGFloat = 0) {
         NSGraphicsContext.saveGraphicsState()
         let transform = NSAffineTransform()
         transform.translateX(by: rect.midX, yBy: rect.midY)
         transform.rotate(byDegrees: rotation)
+        if mirrored { transform.scaleX(by: -1, yBy: 1) }
         transform.translateX(by: -rect.midX, yBy: -rect.midY)
         transform.concat()
         let path = NSBezierPath()
-        path.move(to: CGPoint(x: rect.minX + rect.width * 0.16, y: rect.midY))
+        // 参考图眼型：外眼角高、鼻梁侧尖角低，整体是一片向内下方收尖的杏仁叶片。
+        let outerTop = CGPoint(x: rect.minX + rect.width * 0.08, y: rect.maxY - rect.height * 0.02)
+        let innerTip = CGPoint(x: rect.maxX - rect.width * 0.01, y: rect.minY + rect.height * 0.2)
+        let lowerPoint = CGPoint(x: rect.minX + rect.width * 0.5, y: rect.minY + rect.height * 0.01)
+        let outerBulge = CGPoint(x: rect.minX + rect.width * 0.01, y: rect.minY + rect.height * 0.5)
+        path.move(to: outerTop)
         path.curve(
-            to: CGPoint(x: rect.maxX - rect.width * 0.08, y: rect.maxY - rect.height * 0.07),
-            controlPoint1: CGPoint(x: rect.minX + rect.width * 0.22, y: rect.maxY - rect.height * 0.12),
-            controlPoint2: CGPoint(x: rect.maxX - rect.width * 0.25, y: rect.maxY)
+            to: innerTip,
+            controlPoint1: CGPoint(x: rect.minX + rect.width * 0.33, y: rect.maxY + rect.height * 0.015),
+            controlPoint2: CGPoint(x: rect.maxX - rect.width * 0.11, y: rect.minY + rect.height * 0.43)
         )
         path.curve(
-            to: CGPoint(x: rect.minX + rect.width * 0.16, y: rect.midY),
-            controlPoint1: CGPoint(x: rect.maxX - rect.width * 0.12, y: rect.minY + rect.height * 0.18),
-            controlPoint2: CGPoint(x: rect.minX + rect.width * 0.08, y: rect.minY)
+            to: lowerPoint,
+            controlPoint1: CGPoint(x: rect.maxX - rect.width * 0.08, y: rect.minY + rect.height * 0.09),
+            controlPoint2: CGPoint(x: rect.minX + rect.width * 0.68, y: rect.minY - rect.height * 0.015)
+        )
+        path.curve(
+            to: outerBulge,
+            controlPoint1: CGPoint(x: rect.minX + rect.width * 0.25, y: rect.minY - rect.height * 0.005),
+            controlPoint2: CGPoint(x: rect.minX - rect.width * 0.015, y: rect.minY + rect.height * 0.26)
+        )
+        path.curve(
+            to: outerTop,
+            controlPoint1: CGPoint(x: rect.minX - rect.width * 0.015, y: rect.minY + rect.height * 0.75),
+            controlPoint2: CGPoint(x: rect.minX + rect.width * 0.015, y: rect.maxY - rect.height * 0.1)
         )
         path.close()
-        fillStroke(path, fill: .white, width: 2.25)
-        let glint = NSBezierPath(ovalIn: CGRect(
-            x: rect.minX + rect.width * 0.34,
-            y: rect.maxY - rect.height * 0.32,
-            width: rect.width * 0.32,
-            height: rect.height * 0.12
-        ))
-        NSColor(calibratedRed: 0.7, green: 0.93, blue: 1, alpha: 0.92).setFill()
-        glint.fill()
+        // 黑色框是独立的完整形状，白色镜片缩在框内，避免细描边产生“眼镜”感。
+        ink.setFill()
+        path.fill()
+        NSGraphicsContext.saveGraphicsState()
+        let lensInset = NSAffineTransform()
+        lensInset.translateX(by: rect.midX, yBy: rect.midY)
+        lensInset.scaleX(by: 0.72, yBy: 0.75)
+        lensInset.translateX(by: -rect.midX, yBy: -rect.midY)
+        lensInset.concat()
+        NSColor(calibratedWhite: 0.98, alpha: 1).setFill()
+        path.fill()
+        // 镜片只保留完整白色面，不叠加浅色上沿；浅色描边在小尺寸下会像一条白眉毛。
+        NSGraphicsContext.restoreGraphicsState()
         NSGraphicsContext.restoreGraphicsState()
     }
 
     private static func webDetails(center: CGPoint, radius: CGFloat) {
-        ink.withAlphaComponent(0.38).setStroke()
-        for index in 0..<6 {
-            let angle = CGFloat(index) * .pi / 3
+        let spokeCount = 8
+        ink.withAlphaComponent(0.48).setStroke()
+        for index in 0..<spokeCount {
+            let angle = -CGFloat.pi / 2 + CGFloat(index) * 2 * .pi / CGFloat(spokeCount)
             let path = NSBezierPath()
             path.move(to: center)
             path.line(to: CGPoint(x: center.x + cos(angle) * radius, y: center.y + sin(angle) * radius))
-            path.lineWidth = 0.65
+            path.lineWidth = index % 2 == 0 ? 0.82 : 0.62
+            path.lineCapStyle = .round
             path.stroke()
         }
-        for ring in [0.38, 0.68] as [CGFloat] {
-            let path = NSBezierPath(ovalIn: CGRect(
-                x: center.x - radius * ring,
-                y: center.y - radius * ring,
-                width: radius * ring * 2,
-                height: radius * ring * 2
-            ))
+        for ring in [0.32, 0.57, 0.82] as [CGFloat] {
+            let path = NSBezierPath()
+            for index in 0...spokeCount {
+                let angle = -CGFloat.pi / 2 + CGFloat(index % spokeCount) * 2 * .pi / CGFloat(spokeCount)
+                let ripple = ring * (index % 2 == 0 ? 0.96 : 1.04)
+                let point = CGPoint(x: center.x + cos(angle) * radius * ripple, y: center.y + sin(angle) * radius * ripple)
+                if index == 0 { path.move(to: point) } else { path.line(to: point) }
+            }
+            path.close()
+            path.lineJoinStyle = .round
             path.lineWidth = 0.55
             path.stroke()
         }
+        ink.withAlphaComponent(0.62).setFill()
+        NSBezierPath(ovalIn: CGRect(x: center.x - 1.25, y: center.y - 1.25, width: 2.5, height: 2.5)).fill()
+    }
+
+    private static func drawLimb(from: CGPoint, to: CGPoint, width: CGFloat, color: NSColor, outline: CGFloat = 1.8) {
+        let length = pointDistance(from, to)
+        guard length > 0.5 else { return }
+        NSGraphicsContext.saveGraphicsState()
+        let transform = NSAffineTransform()
+        transform.translateX(by: from.x, yBy: from.y)
+        transform.rotate(byDegrees: atan2(to.y - from.y, to.x - from.x) * 180 / .pi)
+        transform.concat()
+        let limb = rounded(CGRect(x: -width * 0.18, y: -width / 2, width: length + width * 0.36, height: width), radius: width / 2)
+        let light = color.blended(withFraction: 0.26, of: .white) ?? color
+        let dark = color.blended(withFraction: 0.34, of: .black) ?? color
+        gradientFillStroke(limb, colors: [light, color, dark], angle: -90, width: outline)
+        let highlight = NSBezierPath()
+        highlight.move(to: CGPoint(x: width * 0.05, y: width * 0.2))
+        highlight.line(to: CGPoint(x: max(width * 0.2, length - width * 0.35), y: width * 0.2))
+        NSColor.white.withAlphaComponent(0.16).setStroke()
+        highlight.lineWidth = 0.55
+        highlight.lineCapStyle = .round
+        highlight.stroke()
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    private static func drawBoot(at point: CGPoint, angle: CGFloat, scale: CGFloat = 1) {
+        NSGraphicsContext.saveGraphicsState()
+        let transform = NSAffineTransform()
+        transform.translateX(by: point.x, yBy: point.y)
+        transform.rotate(byDegrees: angle)
+        transform.concat()
+        let boot = rounded(CGRect(x: -5 * scale, y: -4.2 * scale, width: 13 * scale, height: 8.4 * scale), radius: 4 * scale)
+        gradientFillStroke(boot, colors: [redLight, red, redDark], angle: -90, width: 1.55)
+        ink.withAlphaComponent(0.52).setStroke()
+        let webBand = NSBezierPath()
+        webBand.move(to: CGPoint(x: -1.5 * scale, y: -3.2 * scale))
+        webBand.curve(to: CGPoint(x: 0.2 * scale, y: 3.2 * scale), controlPoint1: CGPoint(x: 0, y: -1.5 * scale), controlPoint2: CGPoint(x: 0, y: 1.5 * scale))
+        webBand.lineWidth = 0.55
+        webBand.stroke()
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    private static func drawFingerCapsule(from: CGPoint, to: CGPoint, width: CGFloat, color: NSColor) {
+        let length = pointDistance(from, to)
+        guard length > 0.4 else { return }
+        NSGraphicsContext.saveGraphicsState()
+        let transform = NSAffineTransform()
+        transform.translateX(by: from.x, yBy: from.y)
+        transform.rotate(byDegrees: atan2(to.y - from.y, to.x - from.x) * 180 / .pi)
+        transform.concat()
+        let finger = rounded(CGRect(x: -width * 0.12, y: -width / 2, width: length + width * 0.24, height: width), radius: width / 2)
+        let light = color.blended(withFraction: 0.24, of: .white) ?? color
+        let dark = color.blended(withFraction: 0.32, of: .black) ?? color
+        gradientFillStroke(finger, colors: [light, color, dark], angle: -90, width: 1.05)
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    private static func drawSplayedHand(at point: CGPoint, angle: CGFloat, scale: CGFloat = 1) {
+        NSGraphicsContext.saveGraphicsState()
+        let transform = NSAffineTransform()
+        transform.translateX(by: point.x, yBy: point.y)
+        transform.rotate(byDegrees: angle)
+        transform.concat()
+
+        // 手指是互相独立的填充轮廓，避免缩小时描边交叉成“麻花”。
+        drawFingerCapsule(from: CGPoint(x: 1.4 * scale, y: 2 * scale), to: CGPoint(x: 9.1 * scale, y: 4 * scale), width: 2.35 * scale, color: red)
+        drawFingerCapsule(from: CGPoint(x: 2 * scale, y: 0.45 * scale), to: CGPoint(x: 10.2 * scale, y: 0.7 * scale), width: 2.2 * scale, color: red)
+        drawFingerCapsule(from: CGPoint(x: 1.5 * scale, y: -1.6 * scale), to: CGPoint(x: 8.8 * scale, y: -3.3 * scale), width: 2.1 * scale, color: red)
+        drawFingerCapsule(from: CGPoint(x: -0.8 * scale, y: -2.3 * scale), to: CGPoint(x: 3.2 * scale, y: -6.1 * scale), width: 2.45 * scale, color: red)
+
+        let palm = rounded(CGRect(x: -4.8 * scale, y: -4.1 * scale, width: 10 * scale, height: 8.2 * scale), radius: 3.6 * scale)
+        gradientFillStroke(palm, colors: [redLight, red, redDark], angle: -90, width: 1.45)
+        ink.withAlphaComponent(0.48).setStroke()
+        let palmSeam = NSBezierPath()
+        palmSeam.move(to: CGPoint(x: -2.6 * scale, y: 0))
+        palmSeam.curve(to: CGPoint(x: 3.2 * scale, y: 0), controlPoint1: CGPoint(x: -0.8 * scale, y: -1.5 * scale), controlPoint2: CGPoint(x: 1.4 * scale, y: -1.5 * scale))
+        palmSeam.lineWidth = 0.5 * scale
+        palmSeam.stroke()
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    private static func strokeSuitPath(_ path: NSBezierPath, color: NSColor, width: CGFloat) {
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+        ink.setStroke(); path.lineWidth = width + 3; path.stroke()
+        let dark = color.blended(withFraction: 0.34, of: .black) ?? color
+        dark.setStroke(); path.lineWidth = width; path.stroke()
+        color.setStroke(); path.lineWidth = max(1, width - 1.25); path.stroke()
+        NSColor.white.withAlphaComponent(0.14).setStroke()
+        path.lineWidth = max(0.5, width * 0.16)
+        path.stroke()
+    }
+
+    private static func drawContinuousLeg(hip: CGPoint, knee: CGPoint, ankle: CGPoint, foot: CGPoint) {
+        func direction(from: CGPoint, to: CGPoint) -> CGPoint {
+            let dx = to.x - from.x
+            let dy = to.y - from.y
+            let length = max(0.001, hypot(dx, dy))
+            return CGPoint(x: dx / length, y: dy / length)
+        }
+        func perpendicular(_ value: CGPoint) -> CGPoint { CGPoint(x: -value.y, y: value.x) }
+        func normalized(_ value: CGPoint) -> CGPoint {
+            let length = max(0.001, hypot(value.x, value.y))
+            return CGPoint(x: value.x / length, y: value.y / length)
+        }
+        func shifted(_ point: CGPoint, _ normal: CGPoint, _ amount: CGFloat) -> CGPoint {
+            CGPoint(x: point.x + normal.x * amount, y: point.y + normal.y * amount)
+        }
+
+        let thighDirection = direction(from: hip, to: knee)
+        let calfDirection = direction(from: knee, to: ankle)
+        let hipNormal = perpendicular(thighDirection)
+        let ankleNormal = perpendicular(calfDirection)
+        let kneeNormal = normalized(CGPoint(x: hipNormal.x + ankleNormal.x, y: hipNormal.y + ankleNormal.y))
+        let thighLength = pointDistance(hip, knee)
+        let calfLength = pointDistance(knee, ankle)
+
+        let outerHip = shifted(hip, hipNormal, 4.55)
+        let outerThighKnee = shifted(
+            CGPoint(x: knee.x - thighDirection.x * 1.45, y: knee.y - thighDirection.y * 1.45),
+            hipNormal,
+            4.35
+        )
+        let outerKnee = shifted(knee, kneeNormal, 4.5)
+        let outerCalfKnee = shifted(
+            CGPoint(x: knee.x + calfDirection.x * 1.55, y: knee.y + calfDirection.y * 1.55),
+            ankleNormal,
+            4.05
+        )
+        let outerAnkle = shifted(ankle, ankleNormal, 3.05)
+        let innerAnkle = shifted(ankle, ankleNormal, -3.05)
+        let innerCalfKnee = shifted(
+            CGPoint(x: knee.x + calfDirection.x * 1.55, y: knee.y + calfDirection.y * 1.55),
+            ankleNormal,
+            -3.55
+        )
+        let innerKnee = shifted(knee, kneeNormal, -3.8)
+        let innerThighKnee = shifted(
+            CGPoint(x: knee.x - thighDirection.x * 1.45, y: knee.y - thighDirection.y * 1.45),
+            hipNormal,
+            -4.05
+        )
+        let innerHip = shifted(hip, hipNormal, -4.55)
+
+        // 封闭轮廓让大腿、膝盖、小腿和脚踝拥有不同宽度，不再是等宽软管。
+        let leg = NSBezierPath()
+        leg.move(to: outerHip)
+        leg.curve(
+            to: outerThighKnee,
+            controlPoint1: CGPoint(x: outerHip.x + thighDirection.x * thighLength * 0.42, y: outerHip.y + thighDirection.y * thighLength * 0.42),
+            controlPoint2: CGPoint(x: outerThighKnee.x - thighDirection.x * thighLength * 0.18, y: outerThighKnee.y - thighDirection.y * thighLength * 0.18)
+        )
+        leg.curve(
+            to: outerCalfKnee,
+            controlPoint1: outerKnee,
+            controlPoint2: outerKnee
+        )
+        leg.curve(
+            to: outerAnkle,
+            controlPoint1: CGPoint(x: outerCalfKnee.x + calfDirection.x * calfLength * 0.2, y: outerCalfKnee.y + calfDirection.y * calfLength * 0.2),
+            controlPoint2: CGPoint(x: outerAnkle.x - calfDirection.x * calfLength * 0.27, y: outerAnkle.y - calfDirection.y * calfLength * 0.27)
+        )
+        leg.line(to: innerAnkle)
+        leg.curve(
+            to: innerCalfKnee,
+            controlPoint1: CGPoint(x: innerAnkle.x - calfDirection.x * calfLength * 0.24, y: innerAnkle.y - calfDirection.y * calfLength * 0.24),
+            controlPoint2: CGPoint(x: innerCalfKnee.x + calfDirection.x * calfLength * 0.18, y: innerCalfKnee.y + calfDirection.y * calfLength * 0.18)
+        )
+        leg.curve(
+            to: innerThighKnee,
+            controlPoint1: innerKnee,
+            controlPoint2: innerKnee
+        )
+        leg.curve(
+            to: innerHip,
+            controlPoint1: CGPoint(x: innerThighKnee.x - thighDirection.x * thighLength * 0.18, y: innerThighKnee.y - thighDirection.y * thighLength * 0.18),
+            controlPoint2: CGPoint(x: innerHip.x + thighDirection.x * thighLength * 0.42, y: innerHip.y + thighDirection.y * thighLength * 0.42)
+        )
+        leg.close()
+        gradientFillStroke(leg, colors: [blueLight, blue, blueDark], angle: -72, width: 1.85)
+
+        // 不画圆形膝盖片或横向关节线，只用顺着肌肉方向的低反光表达体积。
+        let legHighlight = NSBezierPath()
+        let highlightStart = shifted(
+            CGPoint(x: hip.x + thighDirection.x * thighLength * 0.22, y: hip.y + thighDirection.y * thighLength * 0.22),
+            hipNormal,
+            2.35
+        )
+        let highlightEnd = shifted(
+            CGPoint(x: ankle.x - calfDirection.x * calfLength * 0.2, y: ankle.y - calfDirection.y * calfLength * 0.2),
+            ankleNormal,
+            1.45
+        )
+        legHighlight.move(to: highlightStart)
+        legHighlight.curve(to: outerKnee, controlPoint1: outerThighKnee, controlPoint2: outerThighKnee)
+        legHighlight.curve(to: highlightEnd, controlPoint1: outerCalfKnee, controlPoint2: outerCalfKnee)
+        NSColor.white.withAlphaComponent(0.13).setStroke()
+        legHighlight.lineCapStyle = .round
+        legHighlight.lineWidth = 0.72
+        legHighlight.stroke()
+
+        let bootDirection = direction(from: ankle, to: foot)
+        let bootNormal = perpendicular(bootDirection)
+        let toe = CGPoint(x: foot.x + bootDirection.x * 1.65, y: foot.y + bootDirection.y * 1.65)
+        let bootTop = CGPoint(x: ankle.x - calfDirection.x * 4.1, y: ankle.y - calfDirection.y * 4.1)
+        let boot = NSBezierPath()
+        boot.move(to: shifted(bootTop, ankleNormal, 3.35))
+        boot.curve(
+            to: shifted(foot, bootNormal, 3.0),
+            controlPoint1: CGPoint(x: bootTop.x + calfDirection.x * 2.5 + ankleNormal.x * 3.45, y: bootTop.y + calfDirection.y * 2.5 + ankleNormal.y * 3.45),
+            controlPoint2: CGPoint(x: foot.x - bootDirection.x * 1.55 + bootNormal.x * 3.15, y: foot.y - bootDirection.y * 1.55 + bootNormal.y * 3.15)
+        )
+        let toeTop = shifted(toe, bootNormal, 1.75)
+        let toeBottom = shifted(toe, bootNormal, -1.75)
+        boot.curve(to: toeTop, controlPoint1: shifted(foot, bootNormal, 2.8), controlPoint2: shifted(toeTop, bootNormal, 0.55))
+        boot.curve(
+            to: toeBottom,
+            controlPoint1: CGPoint(x: toeTop.x + bootDirection.x * 0.9, y: toeTop.y + bootDirection.y * 0.9),
+            controlPoint2: CGPoint(x: toeBottom.x + bootDirection.x * 0.9, y: toeBottom.y + bootDirection.y * 0.9)
+        )
+        boot.curve(to: shifted(foot, bootNormal, -2.65), controlPoint1: shifted(toeBottom, bootNormal, -0.5), controlPoint2: shifted(foot, bootNormal, -2.4))
+        boot.curve(
+            to: shifted(bootTop, ankleNormal, -3.35),
+            controlPoint1: CGPoint(x: foot.x - bootDirection.x * 1.1 - bootNormal.x * 2.8, y: foot.y - bootDirection.y * 1.1 - bootNormal.y * 2.8),
+            controlPoint2: CGPoint(x: bootTop.x + calfDirection.x * 2.4 - ankleNormal.x * 3.4, y: bootTop.y + calfDirection.y * 2.4 - ankleNormal.y * 3.4)
+        )
+        boot.close()
+        gradientFillStroke(boot, colors: [redLight, red, redDark], angle: -72, width: 1.55)
+
+        ink.withAlphaComponent(0.5).setStroke()
+        let ankleBand = NSBezierPath()
+        ankleBand.move(to: shifted(bootTop, ankleNormal, -3.05))
+        ankleBand.curve(
+            to: shifted(bootTop, ankleNormal, 3.05),
+            controlPoint1: CGPoint(x: bootTop.x - calfDirection.x * 0.7 - ankleNormal.x * 1.35, y: bootTop.y - calfDirection.y * 0.7 - ankleNormal.y * 1.35),
+            controlPoint2: CGPoint(x: bootTop.x - calfDirection.x * 0.7 + ankleNormal.x * 1.35, y: bootTop.y - calfDirection.y * 0.7 + ankleNormal.y * 1.35)
+        )
+        ankleBand.lineWidth = 0.65
+        ankleBand.stroke()
+    }
+
+    private static func drawContinuousArm(shoulder: CGPoint, elbow: CGPoint, wrist: CGPoint, handAngle: CGFloat) {
+        let arm = NSBezierPath()
+        arm.move(to: shoulder)
+        arm.curve(
+            to: elbow,
+            controlPoint1: CGPoint(x: shoulder.x + (elbow.x - shoulder.x) * 0.45, y: shoulder.y + (elbow.y - shoulder.y) * 0.22),
+            controlPoint2: CGPoint(x: elbow.x - (elbow.x - shoulder.x) * 0.2, y: elbow.y - (elbow.y - shoulder.y) * 0.15)
+        )
+        arm.curve(
+            to: wrist,
+            controlPoint1: CGPoint(x: elbow.x + (wrist.x - elbow.x) * 0.28, y: elbow.y + (wrist.y - elbow.y) * 0.18),
+            controlPoint2: CGPoint(x: wrist.x - (wrist.x - elbow.x) * 0.16, y: wrist.y - (wrist.y - elbow.y) * 0.12)
+        )
+        strokeSuitPath(arm, color: blue, width: 7.8)
+
+        let forearm = NSBezierPath()
+        forearm.move(to: elbow)
+        forearm.curve(
+            to: wrist,
+            controlPoint1: CGPoint(x: elbow.x + (wrist.x - elbow.x) * 0.32, y: elbow.y + (wrist.y - elbow.y) * 0.2),
+            controlPoint2: CGPoint(x: wrist.x - (wrist.x - elbow.x) * 0.15, y: wrist.y - (wrist.y - elbow.y) * 0.12)
+        )
+        strokeSuitPath(forearm, color: red, width: 6.8)
+        drawSplayedHand(at: wrist, angle: handAngle, scale: 0.76)
+    }
+
+    private static func drawSwingGripArm(webAngle: CGFloat) {
+        let geometry = armGeometry(style: .classic, webAngle: webAngle)
+        NSGraphicsContext.saveGraphicsState()
+        let transform = NSAffineTransform()
+        transform.translateX(by: geometry.shoulder.x, yBy: geometry.shoulder.y)
+        transform.rotate(byDegrees: webAngle * 180 / .pi)
+        transform.concat()
+
+        let arm = NSBezierPath()
+        arm.move(to: CGPoint(x: -2, y: 0))
+        arm.curve(
+            to: CGPoint(x: geometry.length - 1, y: 0),
+            controlPoint1: CGPoint(x: geometry.length * 0.32, y: 1.5),
+            controlPoint2: CGPoint(x: geometry.length * 0.72, y: -1.1)
+        )
+        strokeSuitPath(arm, color: blue, width: 8.7)
+
+        let forearm = NSBezierPath()
+        forearm.move(to: CGPoint(x: geometry.length - 14, y: 0))
+        forearm.line(to: CGPoint(x: geometry.length + 1, y: 0))
+        strokeSuitPath(forearm, color: red, width: 7.4)
+
+        let cuff = rounded(CGRect(x: geometry.length - 14.8, y: -5.1, width: 4.2, height: 10.2), radius: 1.5)
+        gradientFillStroke(cuff, colors: [NSColor.white, NSColor(calibratedWhite: 0.48, alpha: 1)], angle: -90, width: 1)
+        let fist = NSBezierPath()
+        fist.move(to: CGPoint(x: geometry.length - 1.2, y: -3.8))
+        fist.curve(to: CGPoint(x: geometry.length + 2.2, y: -5.1), controlPoint1: CGPoint(x: geometry.length - 0.2, y: -4.8), controlPoint2: CGPoint(x: geometry.length + 1, y: -5.2))
+        fist.line(to: CGPoint(x: geometry.length + 6.2, y: -3.2))
+        fist.curve(to: CGPoint(x: geometry.length + 7.1, y: 1.1), controlPoint1: CGPoint(x: geometry.length + 7, y: -2.2), controlPoint2: CGPoint(x: geometry.length + 7.4, y: -0.4))
+        fist.curve(to: CGPoint(x: geometry.length + 4.8, y: 4.8), controlPoint1: CGPoint(x: geometry.length + 6.9, y: 2.8), controlPoint2: CGPoint(x: geometry.length + 6, y: 4.1))
+        fist.curve(to: CGPoint(x: geometry.length, y: 3.7), controlPoint1: CGPoint(x: geometry.length + 3, y: 5.3), controlPoint2: CGPoint(x: geometry.length + 1, y: 4.5))
+        fist.close()
+        gradientFillStroke(fist, colors: [redLight, red, redDark], angle: -90, width: 1.55)
+        ink.withAlphaComponent(0.58).setStroke()
+        for y in [-2.15, 0, 2.05] as [CGFloat] {
+            let knuckle = NSBezierPath()
+            knuckle.move(to: CGPoint(x: geometry.length + 1.2, y: y))
+            knuckle.line(to: CGPoint(x: geometry.length + 5.2, y: y * 0.76))
+            knuckle.lineWidth = 0.55
+            knuckle.stroke()
+        }
+        let wrappedThumb = NSBezierPath()
+        wrappedThumb.move(to: CGPoint(x: geometry.length + 0.5, y: -2.8))
+        wrappedThumb.curve(to: CGPoint(x: geometry.length + 4.3, y: -0.8), controlPoint1: CGPoint(x: geometry.length + 2.2, y: -2.6), controlPoint2: CGPoint(x: geometry.length + 3.7, y: -2))
+        wrappedThumb.lineWidth = 0.72
+        wrappedThumb.stroke()
+        NSGraphicsContext.restoreGraphicsState()
     }
 
     private static func drawShadow(width: CGFloat) {
@@ -148,29 +505,32 @@ enum HeroRenderer {
         path.fill()
     }
 
-    private static func armGeometry(style: HeroStyle, webAngle: CGFloat) -> (shoulder: CGPoint, length: CGFloat, thickness: CGFloat) {
+    private static func armGeometry(style: HeroStyle, webAngle: CGFloat, lengthOverride: CGFloat? = nil) -> (shoulder: CGPoint, length: CGFloat, thickness: CGFloat) {
         let side: CGFloat = cos(webAngle) >= 0 ? 1 : -1
+        let geometry: (shoulder: CGPoint, length: CGFloat, thickness: CGFloat)
         switch style {
         case .classic:
-            return (CGPoint(x: side * 10.5, y: 8), 29, 9)
+            geometry = (CGPoint(x: side * 10.5, y: 8), 34, 9)
         case .mochi:
-            return (CGPoint(x: side * 12.5, y: 7), 27, 10)
+            geometry = (CGPoint(x: side * 12.5, y: 7), 27, 10)
         case .comic:
-            return (CGPoint(x: side * 11.5, y: 10), 30, 8.5)
+            geometry = (CGPoint(x: side * 11.5, y: 10), 30, 8.5)
         }
+        return (geometry.shoulder, lengthOverride ?? geometry.length, geometry.thickness)
     }
 
-    static func webHandPoint(style: HeroStyle, webAngle: CGFloat) -> CGPoint {
-        let geometry = armGeometry(style: style, webAngle: webAngle)
-        let reach = geometry.length + 4
+    static func webHandPoint(style: HeroStyle, webAngle: CGFloat, lengthOverride: CGFloat? = nil) -> CGPoint {
+        let geometry = armGeometry(style: style, webAngle: webAngle, lengthOverride: lengthOverride)
+        // 电影设定中蛛丝从腕部发射口射出，而不是从指尖射出。
+        let reach = style == .classic ? geometry.length - 12 : geometry.length + 4
         return CGPoint(
             x: geometry.shoulder.x + cos(webAngle) * reach,
             y: geometry.shoulder.y + sin(webAngle) * reach
         )
     }
 
-    private static func drawFiringArm(style: HeroStyle, webAngle: CGFloat, sleeve: NSColor, glove: NSColor) {
-        let geometry = armGeometry(style: style, webAngle: webAngle)
+    private static func drawFiringArm(style: HeroStyle, webAngle: CGFloat, sleeve: NSColor, glove: NSColor, lengthOverride: CGFloat? = nil) {
+        let geometry = armGeometry(style: style, webAngle: webAngle, lengthOverride: lengthOverride)
         NSGraphicsContext.saveGraphicsState()
         let transform = NSAffineTransform()
         transform.translateX(by: geometry.shoulder.x, yBy: geometry.shoulder.y)
@@ -181,23 +541,42 @@ enum HeroRenderer {
             CGRect(x: -3, y: -geometry.thickness / 2, width: geometry.length - 8, height: geometry.thickness),
             radius: geometry.thickness / 2
         )
-        fillStroke(upperArm, fill: sleeve, width: 1.8)
+        if style == .classic {
+            gradientFillStroke(upperArm, colors: [blueLight, sleeve, blueDark], angle: -90, width: 1.8)
+        } else {
+            fillStroke(upperArm, fill: sleeve, width: 1.8)
+        }
 
         let gauntlet = rounded(
             CGRect(x: geometry.length - 15, y: -geometry.thickness * 0.62, width: 13, height: geometry.thickness * 1.24),
             radius: geometry.thickness * 0.45
         )
-        fillStroke(gauntlet, fill: glove, width: 1.7)
+        if style == .classic {
+            gradientFillStroke(gauntlet, colors: [redLight, glove, redDark], angle: -90, width: 1.7)
+        } else {
+            fillStroke(gauntlet, fill: glove, width: 1.7)
+        }
 
         let cuff = rounded(
             CGRect(x: geometry.length - 15, y: -geometry.thickness * 0.66, width: 4.2, height: geometry.thickness * 1.32),
             radius: 1.6
         )
-        NSColor(calibratedRed: 0.76, green: 0.84, blue: 0.91, alpha: 1).setFill()
-        cuff.fill()
-        ink.setStroke()
-        cuff.lineWidth = 1.2
-        cuff.stroke()
+        gradientFillStroke(cuff, colors: [
+            NSColor(calibratedRed: 0.95, green: 0.98, blue: 1, alpha: 1),
+            NSColor(calibratedRed: 0.44, green: 0.55, blue: 0.65, alpha: 1)
+        ], angle: -90, width: 1.2)
+
+        if style == .classic {
+            ink.withAlphaComponent(0.58).setStroke()
+            for offset in [0.25, 0.68] as [CGFloat] {
+                let band = NSBezierPath()
+                let x = geometry.length - 15 + 4.2 * offset
+                band.move(to: CGPoint(x: x, y: -geometry.thickness * 0.56))
+                band.line(to: CGPoint(x: x, y: geometry.thickness * 0.56))
+                band.lineWidth = 0.45
+                band.stroke()
+            }
+        }
 
         let shooter = NSBezierPath(ovalIn: CGRect(x: geometry.length - 13.8, y: -2.2, width: 3.4, height: 4.4))
         NSColor.white.setFill()
@@ -206,34 +585,59 @@ enum HeroRenderer {
         shooter.lineWidth = 0.8
         shooter.stroke()
 
-        for y in [-1.55, 1.35] as [CGFloat] {
-            let finger = NSBezierPath()
-            finger.move(to: CGPoint(x: geometry.length - 6, y: y))
-            finger.curve(
-                to: CGPoint(x: geometry.length + 4, y: y * 0.48),
-                controlPoint1: CGPoint(x: geometry.length - 1, y: y),
-                controlPoint2: CGPoint(x: geometry.length + 2, y: y * 0.7)
-            )
-            ink.setStroke()
-            finger.lineCapStyle = .round
-            finger.lineWidth = 3.1
-            finger.stroke()
-            glove.setStroke()
-            finger.lineWidth = 1.7
-            finger.stroke()
+        // 经典射丝手势采用互不交叉的填充指节，不用重叠描边线模拟手指。
+        let fingerColor = style == .classic ? red : glove
+        drawFingerCapsule(
+            from: CGPoint(x: geometry.length - 1.1, y: 2.25),
+            to: CGPoint(x: geometry.length + 7.4, y: 5),
+            width: 2.35,
+            color: fingerColor
+        )
+        drawFingerCapsule(
+            from: CGPoint(x: geometry.length - 1.2, y: -2.3),
+            to: CGPoint(x: geometry.length + 5.8, y: -4.9),
+            width: 2.05,
+            color: fingerColor
+        )
+        drawFingerCapsule(
+            from: CGPoint(x: geometry.length - 3.2, y: -2.5),
+            to: CGPoint(x: geometry.length + 0.2, y: -6),
+            width: 2.35,
+            color: fingerColor
+        )
+
+        let palm = rounded(CGRect(x: geometry.length - 7.2, y: -4.5, width: 9.6, height: 9), radius: 4.1)
+        if style == .classic {
+            gradientFillStroke(palm, colors: [redLight, red, redDark], angle: -90, width: 1.45)
+        } else {
+            fillStroke(palm, fill: glove, width: 1.45)
         }
 
-        let bentFinger = NSBezierPath()
-        bentFinger.move(to: CGPoint(x: geometry.length - 5, y: -geometry.thickness * 0.33))
-        bentFinger.curve(
-            to: CGPoint(x: geometry.length - 1, y: -geometry.thickness * 0.52),
-            controlPoint1: CGPoint(x: geometry.length - 3, y: -geometry.thickness * 0.55),
-            controlPoint2: CGPoint(x: geometry.length, y: -geometry.thickness * 0.56)
-        )
-        ink.setStroke()
-        bentFinger.lineWidth = 1.35
-        bentFinger.lineCapStyle = .round
-        bentFinger.stroke()
+        // 扣回掌心的两指用低对比指节面表示，不再叠加第二圈黑色轮廓。
+        for y in [-1.35, 0.75] as [CGFloat] {
+            let folded = rounded(CGRect(x: geometry.length - 4.4, y: y, width: 4.8, height: 1.55), radius: 0.75)
+            redDark.withAlphaComponent(0.82).setFill()
+            folded.fill()
+            let foldedHighlight = rounded(CGRect(x: geometry.length - 3.9, y: y + 0.75, width: 3.5, height: 0.42), radius: 0.2)
+            redLight.withAlphaComponent(0.68).setFill()
+            foldedHighlight.fill()
+        }
+
+        if style == .classic {
+            ink.withAlphaComponent(0.48).setStroke()
+            for offset in [-2.6, 0, 2.6] as [CGFloat] {
+                let gloveWeb = NSBezierPath()
+                gloveWeb.move(to: CGPoint(x: geometry.length - 12, y: 0))
+                gloveWeb.line(to: CGPoint(x: geometry.length - 4.5, y: offset))
+                gloveWeb.lineWidth = 0.45
+                gloveWeb.stroke()
+            }
+            let gloveRing = NSBezierPath()
+            gloveRing.move(to: CGPoint(x: geometry.length - 11.5, y: -3.1))
+            gloveRing.curve(to: CGPoint(x: geometry.length - 11.5, y: 3.1), controlPoint1: CGPoint(x: geometry.length - 7.2, y: -1.8), controlPoint2: CGPoint(x: geometry.length - 7.2, y: 1.8))
+            gloveRing.lineWidth = 0.42
+            gloveRing.stroke()
+        }
         NSGraphicsContext.restoreGraphicsState()
     }
 
@@ -297,73 +701,225 @@ enum HeroRenderer {
             suitBlue = NSColor(calibratedRed: 0.08, green: 0.31, blue: 0.76, alpha: 1)
         }
 
-        // 蜷在面罩上方的小身体，造型取自参考图的“大头、小身体”比例。
-        fillStroke(rounded(CGRect(x: -18, y: 25, width: 13, height: 15), radius: 6), fill: suitBlue, width: 2)
-        fillStroke(rounded(CGRect(x: 5, y: 25, width: 13, height: 15), radius: 6), fill: suitBlue, width: 2)
-        let tinyBody = rounded(CGRect(x: -14, y: 14, width: 28, height: 23), radius: 11)
-        fillStroke(tinyBody, fill: suitBlue, width: 2.4)
-        let tinyChest = rounded(CGRect(x: -8, y: 17, width: 16, height: 17), radius: 7)
-        suitRed.setFill()
-        tinyChest.fill()
-        drawChestSpider(center: CGPoint(x: 0, y: 24), scale: 0.48)
-
-        for side in [-1, 1] as [CGFloat] {
-            NSGraphicsContext.saveGraphicsState()
-            let armTransform = NSAffineTransform()
-            armTransform.translateX(by: side * 8, yBy: 26)
-            armTransform.rotate(byDegrees: side * -32)
-            armTransform.concat()
-            fillStroke(rounded(CGRect(x: -4.5, y: -3.8, width: 20, height: 8), radius: 4), fill: suitRed, width: 1.8)
-            NSGraphicsContext.restoreGraphicsState()
-        }
-
-        // 白色蛛丝穿过双手，手掌紧握在一起。
+        // 蛛丝固定在并拢的脚踝之间；脚在最上，头在最下，保证倒挂方向真实。
         let innerWeb = NSBezierPath()
-        innerWeb.move(to: CGPoint(x: 0, y: 47))
-        innerWeb.line(to: CGPoint(x: 0, y: 29))
+        innerWeb.move(to: CGPoint(x: 0, y: 61))
+        innerWeb.line(to: CGPoint(x: 0, y: 43))
         NSColor.white.setStroke()
-        innerWeb.lineWidth = 2.4
+        innerWeb.lineWidth = 2.2
         innerWeb.lineCapStyle = .round
         innerWeb.stroke()
-        fillStroke(NSBezierPath(ovalIn: CGRect(x: -8, y: 31, width: 10, height: 10)), fill: suitRed, width: 1.8)
-        fillStroke(NSBezierPath(ovalIn: CGRect(x: -2, y: 31, width: 10, height: 10)), fill: suitRed, width: 1.8)
 
-        let head = NSBezierPath(ovalIn: CGRect(x: -26, y: -32, width: 52, height: 52))
-        fillStroke(head, fill: suitRed, width: 3)
-        webDetails(center: CGPoint(x: 0, y: -6), radius: 23)
-        eye(CGRect(x: -21, y: -14, width: 19, height: 24), rotation: -15)
-        eye(CGRect(x: 2, y: -14, width: 19, height: 24), rotation: 15)
+        // 双腿从腰部向两侧屈膝，再回收到中间脚踝，形成倒挂时自然的菱形剪影。
+        drawLimb(from: CGPoint(x: -7, y: 22), to: CGPoint(x: -19, y: 33), width: 11.2, color: suitBlue, outline: 1.85)
+        drawLimb(from: CGPoint(x: -19, y: 33), to: CGPoint(x: -4.5, y: 47), width: 9.6, color: suitBlue, outline: 1.75)
+        drawLimb(from: CGPoint(x: 7, y: 22), to: CGPoint(x: 19, y: 33), width: 11.2, color: suitBlue, outline: 1.85)
+        drawLimb(from: CGPoint(x: 19, y: 33), to: CGPoint(x: 4.5, y: 47), width: 9.6, color: suitBlue, outline: 1.75)
+        drawBoot(at: CGPoint(x: -4.7, y: 48), angle: 34, scale: 0.9)
+        drawBoot(at: CGPoint(x: 4.7, y: 48), angle: 146, scale: 0.9)
+
+        let ankleWrap = NSBezierPath(ovalIn: CGRect(x: -5.8, y: 45.2, width: 11.6, height: 6.2))
+        NSColor.white.withAlphaComponent(0.94).setStroke()
+        ankleWrap.lineWidth = 1.05
+        ankleWrap.stroke()
+
+        // 倒置躯干：上方腰窄、下方肩宽，而不是把一个正立身体放到头顶。
+        let torso = NSBezierPath()
+        torso.move(to: CGPoint(x: -8, y: 32))
+        torso.curve(to: CGPoint(x: -17, y: 13), controlPoint1: CGPoint(x: -11.5, y: 27), controlPoint2: CGPoint(x: -16.5, y: 20))
+        torso.curve(to: CGPoint(x: -10, y: 4), controlPoint1: CGPoint(x: -18, y: 8.5), controlPoint2: CGPoint(x: -14, y: 4.5))
+        torso.line(to: CGPoint(x: 10, y: 4))
+        torso.curve(to: CGPoint(x: 17, y: 13), controlPoint1: CGPoint(x: 14, y: 4.5), controlPoint2: CGPoint(x: 18, y: 8.5))
+        torso.curve(to: CGPoint(x: 8, y: 32), controlPoint1: CGPoint(x: 16.5, y: 20), controlPoint2: CGPoint(x: 11.5, y: 27))
+        torso.close()
+        if style == .classic {
+            gradientFillStroke(torso, colors: [blueLight, blue, blueDark], angle: -76, width: 2.25)
+        } else {
+            fillStroke(torso, fill: suitBlue, width: 2.25)
+        }
+
+        let invertedChest = NSBezierPath()
+        invertedChest.move(to: CGPoint(x: -7, y: 29))
+        invertedChest.curve(to: CGPoint(x: -13.2, y: 9), controlPoint1: CGPoint(x: -9, y: 23.5), controlPoint2: CGPoint(x: -12.7, y: 16))
+        invertedChest.curve(to: CGPoint(x: 13.2, y: 9), controlPoint1: CGPoint(x: -5, y: 5.8), controlPoint2: CGPoint(x: 5, y: 5.8))
+        invertedChest.curve(to: CGPoint(x: 7, y: 29), controlPoint1: CGPoint(x: 12.7, y: 16), controlPoint2: CGPoint(x: 9, y: 23.5))
+        invertedChest.close()
+        if style == .classic {
+            gradientFillStroke(invertedChest, colors: [redLight, red, redDark], angle: -78, width: 0.85)
+        } else {
+            suitRed.setFill(); invertedChest.fill()
+        }
+
+        NSGraphicsContext.saveGraphicsState()
+        let chestRotation = NSAffineTransform()
+        chestRotation.translateX(by: 0, yBy: 19)
+        chestRotation.rotate(byDegrees: 180)
+        chestRotation.translateX(by: 0, yBy: -19)
+        chestRotation.concat()
+        drawChestSpider(center: CGPoint(x: 0, y: 19), scale: 0.58)
+        NSGraphicsContext.restoreGraphicsState()
+
+        // 手臂从下方肩部向上抱住小腿，手掌在蛛丝两侧，强化倒挂受力关系。
+        for side in [-1, 1] as [CGFloat] {
+            drawLimb(from: CGPoint(x: side * 14, y: 12), to: CGPoint(x: side * 23, y: 24), width: 9.4, color: suitBlue, outline: 1.7)
+            drawLimb(from: CGPoint(x: side * 23, y: 24), to: CGPoint(x: side * 8.5, y: 37), width: 8.5, color: suitRed, outline: 1.65)
+            let hand = NSBezierPath(ovalIn: CGRect(x: side * 8.5 - 5.25, y: 32.5, width: 10.5, height: 10.5))
+            fillStroke(hand, fill: suitRed, width: 1.55)
+        }
+
+        let head = NSBezierPath(ovalIn: CGRect(x: -25, y: -38, width: 50, height: 50))
+        if style == .classic {
+            gradientFillStroke(head, colors: [redLight, red, redDark], angle: -58, width: 3)
+        } else {
+            fillStroke(head, fill: suitRed, width: 3)
+        }
+
+        // 面罩整体旋转 180°：倒挂时眼型与下巴方向也必须倒转。
+        NSGraphicsContext.saveGraphicsState()
+        let faceRotation = NSAffineTransform()
+        faceRotation.translateX(by: 0, yBy: -13)
+        faceRotation.rotate(byDegrees: 180)
+        faceRotation.translateX(by: 0, yBy: 13)
+        faceRotation.concat()
+        webDetails(center: CGPoint(x: 0, y: -13), radius: 22)
+        eye(CGRect(x: -19.2, y: -23.5, width: 17.5, height: 21.5))
+        eye(CGRect(x: 1.7, y: -23.5, width: 17.5, height: 21.5), mirrored: true)
+        NSGraphicsContext.restoreGraphicsState()
     }
 
     private static func drawClassic(pose: HeroPose, webAngle: CGFloat) {
-        drawShadow(width: 32)
+        let firingRight = cos(webAngle) >= 0
 
-        fillStroke(rounded(CGRect(x: -13, y: -24, width: 10, height: 25), radius: 5), fill: blue)
-        fillStroke(rounded(CGRect(x: 3, y: -24, width: 10, height: 25), radius: 5), fill: blue)
-        fillStroke(rounded(CGRect(x: -13.5, y: -25, width: 11, height: 10), radius: 4), fill: red, width: 1.7)
-        fillStroke(rounded(CGRect(x: 2.5, y: -25, width: 11, height: 10), radius: 4), fill: red, width: 1.7)
-
-        if pose == .idle {
-            drawStaticArms(left: true, right: true, color: red)
-        } else {
-            let firesRight = cos(webAngle) >= 0
-            drawStaticArms(left: firesRight, right: !firesRight, color: red)
+        // 每个状态使用独立剪影，小尺寸下仍能一眼分辨动作。
+        switch pose {
+        case .idle:
+            drawShadow(width: 36)
+            drawLimb(from: CGPoint(x: -6, y: -5), to: CGPoint(x: -10, y: -24), width: 9.5, color: blue)
+            drawLimb(from: CGPoint(x: 6, y: -5), to: CGPoint(x: 11, y: -23), width: 9.5, color: blue)
+            drawBoot(at: CGPoint(x: -10, y: -24), angle: 174)
+            drawBoot(at: CGPoint(x: 10, y: -23), angle: 6)
+            drawLimb(from: CGPoint(x: -11, y: 9), to: CGPoint(x: -19, y: -7), width: 8.5, color: blue)
+            drawLimb(from: CGPoint(x: -19, y: -7), to: CGPoint(x: -15, y: -16), width: 8.5, color: red)
+            drawLimb(from: CGPoint(x: 11, y: 9), to: CGPoint(x: 19, y: -5), width: 8.5, color: blue)
+            drawLimb(from: CGPoint(x: 19, y: -5), to: CGPoint(x: 16, y: -14), width: 8.5, color: red)
+        case .firing:
+            drawShadow(width: 37)
+            drawLimb(from: CGPoint(x: -6, y: -5), to: CGPoint(x: -17, y: -18), width: 9.4, color: blue)
+            drawLimb(from: CGPoint(x: 6, y: -5), to: CGPoint(x: 15, y: -18), width: 9.4, color: blue)
+            drawBoot(at: CGPoint(x: -17, y: -18), angle: 158)
+            drawBoot(at: CGPoint(x: 15, y: -18), angle: 22)
+            let braceSide: CGFloat = firingRight ? -1 : 1
+            drawLimb(from: CGPoint(x: braceSide * 11, y: 8), to: CGPoint(x: braceSide * 20, y: -2), width: 8.6, color: blue)
+            drawLimb(from: CGPoint(x: braceSide * 20, y: -2), to: CGPoint(x: braceSide * 13, y: -11), width: 8.4, color: red)
             drawFiringArm(style: .classic, webAngle: webAngle, sleeve: blue, glove: red)
+        case .swinging:
+            let motionSide: CGFloat = firingRight ? 1 : -1
+            // A2 官方动作骨架：射丝手向前上方、空闲手后下展开、一腿舒展、一腿交叉收起。
+            drawContinuousLeg(
+                hip: CGPoint(x: motionSide * 5.2, y: -5.5),
+                knee: CGPoint(x: motionSide * 18, y: -3.5),
+                ankle: CGPoint(x: motionSide * 30, y: 1.5),
+                foot: CGPoint(x: motionSide * 36, y: 3.5)
+            )
+            drawContinuousLeg(
+                hip: CGPoint(x: -motionSide * 5.1, y: -6),
+                knee: CGPoint(x: motionSide * 1.5, y: -17),
+                ankle: CGPoint(x: motionSide * 9.5, y: -24),
+                foot: CGPoint(x: motionSide * 14, y: -27.5)
+            )
+            drawContinuousArm(
+                shoulder: CGPoint(x: -motionSide * 10.5, y: 8),
+                elbow: CGPoint(x: -motionSide * 21.5, y: 1.5),
+                wrist: CGPoint(x: -motionSide * 31, y: -5),
+                handAngle: motionSide > 0 ? 205 : -25
+            )
+            drawFiringArm(style: .classic, webAngle: webAngle, sleeve: blue, glove: red, lengthOverride: 47)
+        case .landing:
+            drawShadow(width: 62)
+            // 5 号参考的低重心蜘蛛式落地：两腿外张、一手撑地、另一手保持平衡。
+            drawLimb(from: CGPoint(x: -5, y: -8), to: CGPoint(x: -19, y: -14), width: 10.2, color: blue)
+            drawLimb(from: CGPoint(x: -19, y: -14), to: CGPoint(x: -31, y: -24), width: 8.8, color: blue)
+            drawBoot(at: CGPoint(x: -31, y: -24), angle: 172, scale: 1.05)
+            drawLimb(from: CGPoint(x: 5, y: -8), to: CGPoint(x: 20, y: -13), width: 10.2, color: blue)
+            drawLimb(from: CGPoint(x: 20, y: -13), to: CGPoint(x: 33, y: -19), width: 8.8, color: blue)
+            drawBoot(at: CGPoint(x: 33, y: -19), angle: 5, scale: 1.05)
+
+            drawLimb(from: CGPoint(x: 10, y: 5), to: CGPoint(x: 18, y: -8), width: 8.6, color: blue)
+            drawLimb(from: CGPoint(x: 18, y: -8), to: CGPoint(x: 24, y: -25), width: 8.1, color: red)
+            drawSplayedHand(at: CGPoint(x: 24, y: -26), angle: -7, scale: 0.88)
+
+            drawLimb(from: CGPoint(x: -10, y: 7), to: CGPoint(x: -22, y: 12), width: 8.5, color: blue)
+            drawLimb(from: CGPoint(x: -22, y: 12), to: CGPoint(x: -31, y: 19), width: 7.9, color: red)
+            drawSplayedHand(at: CGPoint(x: -32, y: 19), angle: 176, scale: 0.82)
+        case .hanging:
+            break
         }
 
-        let torso = rounded(CGRect(x: -14, y: -11, width: 28, height: 28), radius: 11)
-        fillStroke(torso, fill: blue)
-        let chest = rounded(CGRect(x: -8, y: -8, width: 16, height: 23), radius: 7)
-        red.setFill(); chest.fill()
-        ink.withAlphaComponent(0.7).setStroke(); chest.lineWidth = 1; chest.stroke()
-        drawTorsoSeams()
-        drawChestSpider(center: CGPoint(x: 0, y: 3.5), scale: 0.72)
+        let torsoY: CGFloat = pose == .landing ? -13 : -11
+        let torso = rounded(CGRect(x: -14, y: torsoY, width: 28, height: 30), radius: 11)
+        gradientFillStroke(torso, colors: [blueLight, blue, blueDark], angle: -72, width: 2.45)
 
-        let head = rounded(CGRect(x: -23, y: 7, width: 46, height: 42), radius: 21)
-        fillStroke(head, fill: red, width: 2.5)
-        webDetails(center: CGPoint(x: 0, y: 28), radius: 17)
-        eye(CGRect(x: -18, y: 18, width: 15, height: 21), rotation: -11)
-        eye(CGRect(x: 3, y: 18, width: 15, height: 21), rotation: 11)
+        // 电影战衣的深蓝侧腹护片和反光滚边。
+        for side in [-1, 1] as [CGFloat] {
+            let sidePanel = NSBezierPath()
+            sidePanel.move(to: CGPoint(x: side * 8.3, y: torsoY + 3))
+            sidePanel.curve(
+                to: CGPoint(x: side * 10.4, y: torsoY + 24),
+                controlPoint1: CGPoint(x: side * 12.6, y: torsoY + 8),
+                controlPoint2: CGPoint(x: side * 12.2, y: torsoY + 18)
+            )
+            sidePanel.line(to: CGPoint(x: side * 7.1, y: torsoY + 21.5))
+            sidePanel.curve(to: CGPoint(x: side * 8.3, y: torsoY + 3), controlPoint1: CGPoint(x: side * 8.4, y: torsoY + 14), controlPoint2: CGPoint(x: side * 8.2, y: torsoY + 8))
+            sidePanel.close()
+            blueDark.withAlphaComponent(0.78).setFill(); sidePanel.fill()
+            blueLight.withAlphaComponent(0.68).setStroke(); sidePanel.lineWidth = 0.52; sidePanel.stroke()
+        }
+        let chest = NSBezierPath()
+        chest.move(to: CGPoint(x: -9, y: torsoY + 4))
+        chest.curve(to: CGPoint(x: -11, y: torsoY + 24), controlPoint1: CGPoint(x: -10, y: torsoY + 12), controlPoint2: CGPoint(x: -12, y: torsoY + 19))
+        chest.curve(to: CGPoint(x: 11, y: torsoY + 24), controlPoint1: CGPoint(x: -3, y: torsoY + 28), controlPoint2: CGPoint(x: 3, y: torsoY + 28))
+        chest.curve(to: CGPoint(x: 9, y: torsoY + 4), controlPoint1: CGPoint(x: 12, y: torsoY + 19), controlPoint2: CGPoint(x: 10, y: torsoY + 11))
+        chest.close()
+        gradientFillStroke(chest, colors: [redLight, red, redDark], angle: -82, width: 1.15)
+
+        let collar = NSBezierPath()
+        collar.move(to: CGPoint(x: -7.5, y: torsoY + 23.4))
+        collar.curve(to: CGPoint(x: 7.5, y: torsoY + 23.4), controlPoint1: CGPoint(x: -3.2, y: torsoY + 20.8), controlPoint2: CGPoint(x: 3.2, y: torsoY + 20.8))
+        ink.withAlphaComponent(0.72).setStroke(); collar.lineWidth = 1.1; collar.stroke()
+
+        // 胸甲蛛网只保留在红色面板内，避免小图标变成噪点。
+        ink.withAlphaComponent(0.58).setStroke()
+        for x in [-6, -3, 0, 3, 6] as [CGFloat] {
+            let seam = NSBezierPath()
+            seam.move(to: CGPoint(x: 0, y: torsoY + 23))
+            seam.line(to: CGPoint(x: x, y: torsoY + 8))
+            seam.lineWidth = x == 0 ? 0.65 : 0.45
+            seam.stroke()
+        }
+        for offset in [15.8, 19.5] as [CGFloat] {
+            let chestRing = NSBezierPath()
+            chestRing.move(to: CGPoint(x: -8, y: torsoY + offset))
+            chestRing.curve(to: CGPoint(x: 8, y: torsoY + offset), controlPoint1: CGPoint(x: -3.3, y: torsoY + offset - 3.1), controlPoint2: CGPoint(x: 3.3, y: torsoY + offset - 3.1))
+            chestRing.lineWidth = 0.48
+            chestRing.stroke()
+        }
+        drawChestSpider(center: CGPoint(x: 0, y: torsoY + 12.2), scale: 0.72)
+
+        let belt = NSBezierPath()
+        belt.move(to: CGPoint(x: -10, y: torsoY + 4.2))
+        belt.curve(to: CGPoint(x: 10, y: torsoY + 4.2), controlPoint1: CGPoint(x: -4, y: torsoY + 1.8), controlPoint2: CGPoint(x: 4, y: torsoY + 1.8))
+        NSColor(calibratedRed: 0.35, green: 0.48, blue: 0.88, alpha: 0.68).setStroke()
+        belt.lineWidth = 0.62; belt.stroke()
+
+        let headY: CGFloat = pose == .landing ? -0.5 : 6.5
+        let head = rounded(CGRect(x: -24.5, y: headY, width: 49, height: 45), radius: 22.5)
+        gradientFillStroke(head, colors: [redLight, red, redDark], angle: -58, width: 2.85)
+        redDark.withAlphaComponent(0.26).setFill()
+        NSBezierPath(ovalIn: CGRect(x: 10, y: headY + 6, width: 10, height: 27)).fill()
+        let maskCenter = CGPoint(x: 0, y: headY + 22)
+        webDetails(center: maskCenter, radius: 19)
+        eye(CGRect(x: -19.2, y: headY + 11.5, width: 17.5, height: 21.5))
+        eye(CGRect(x: 1.7, y: headY + 11.5, width: 17.5, height: 21.5), mirrored: true)
     }
 
     private static func drawMochi(pose: HeroPose, webAngle: CGFloat) {
@@ -399,7 +955,7 @@ enum HeroRenderer {
         NSBezierPath(ovalIn: CGRect(x: -15, y: 35, width: 15, height: 6)).fill()
         webDetails(center: CGPoint(x: 0, y: 28), radius: 18)
         eye(CGRect(x: -16, y: 20, width: 13, height: 18), rotation: -5)
-        eye(CGRect(x: 3, y: 20, width: 13, height: 18), rotation: 5)
+        eye(CGRect(x: 3, y: 20, width: 13, height: 18), mirrored: true, rotation: 5)
     }
 
     private static func drawComic(pose heroPose: HeroPose, webAngle: CGFloat) {
@@ -438,12 +994,12 @@ enum HeroRenderer {
         fillStroke(head, fill: red, width: 2.8)
         webDetails(center: CGPoint(x: 0, y: 29), radius: 17)
         eye(CGRect(x: -14, y: 23, width: 11, height: 17), rotation: -15)
-        eye(CGRect(x: 4, y: 25, width: 11, height: 17), rotation: 14)
+        eye(CGRect(x: 4, y: 25, width: 11, height: 17), mirrored: true, rotation: 14)
         NSGraphicsContext.restoreGraphicsState()
     }
 
     static func renderPreview(to path: String) throws {
-        let size = CGSize(width: 1160, height: 330)
+        let size = CGSize(width: 1440, height: 350)
         let image = NSImage(size: size)
         image.lockFocus()
 
@@ -451,15 +1007,23 @@ enum HeroRenderer {
         NSColor(calibratedRed: 0.035, green: 0.035, blue: 0.09, alpha: 1).setFill()
         background.fill()
 
-        let title = "蛛网小英雄 · 参考图萌系比例 + 悬挂待机"
-        title.draw(at: CGPoint(x: 36, y: 278), withAttributes: [
+        let title = "蛛网小英雄 · 精细电影战衣版"
+        title.draw(at: CGPoint(x: 36, y: 298), withAttributes: [
             .font: NSFont.systemFont(ofSize: 25, weight: .bold),
             .foregroundColor: NSColor.white
         ])
+        "截图同款窄长尖角镜片 · A2 射丝摆荡骨架 · 蜘蛛式落地".draw(
+            at: CGPoint(x: 36, y: 273),
+            withAttributes: [.font: NSFont.systemFont(ofSize: 14, weight: .medium), .foregroundColor: NSColor.white.withAlphaComponent(0.62)]
+        )
 
-        for index in 0..<4 {
+        let poses: [HeroPose] = [.idle, .firing, .swinging, .landing, .hanging]
+        let labels = ["萌系待机", "手腕射丝", "A2 射丝摆荡", "蜘蛛式落地", "悬挂待机"]
+        for index in poses.indices {
             let cardX = CGFloat(28 + index * 280)
-            let card = NSBezierPath(roundedRect: CGRect(x: cardX, y: 30, width: 264, height: 225), xRadius: 22, yRadius: 22)
+            let cardY: CGFloat = 30
+            let cardWidth: CGFloat = 264
+            let card = NSBezierPath(roundedRect: CGRect(x: cardX, y: cardY, width: cardWidth, height: 225), xRadius: 22, yRadius: 22)
             NSColor(calibratedRed: 0.08, green: 0.08, blue: 0.18, alpha: 1).setFill()
             card.fill()
             NSColor(calibratedRed: 0.25, green: 0.3, blue: 0.6, alpha: 0.55).setStroke()
@@ -468,24 +1032,37 @@ enum HeroRenderer {
 
             NSGraphicsContext.saveGraphicsState()
             let context = NSGraphicsContext.current!.cgContext
-            let isHangingCard = index == 3
-            let style = isHangingCard ? HeroStyle.classic : HeroStyle.allCases[index]
-            context.translateBy(x: cardX + 132, y: isHangingCard ? 134 : 132)
-            context.scaleBy(x: isHangingCard ? 1.5 : 1.65, y: isHangingCard ? 1.5 : 1.65)
+            let pose = poses[index]
+            let isHangingCard = pose == .hanging
+            context.translateBy(x: cardX + cardWidth / 2, y: cardY + (isHangingCard ? 107 : 115))
+            context.scaleBy(x: isHangingCard ? 1.68 : 1.95, y: isHangingCard ? 1.68 : 1.95)
             if isHangingCard {
                 context.setStrokeColor(NSColor.white.withAlphaComponent(0.95).cgColor)
                 context.setLineWidth(1.7)
                 context.move(to: CGPoint(x: 0, y: 72))
                 context.addLine(to: CGPoint(x: 0, y: 42))
                 context.strokePath()
-                draw(style: style, pose: .hanging)
+                draw(style: .classic, pose: .hanging)
             } else {
-                draw(style: style, pose: .firing, webAngle: .pi / 3.2)
+                if pose == .firing || pose == .swinging {
+                    let hand = webHandPoint(
+                        style: .classic,
+                        webAngle: .pi / 3.2,
+                        lengthOverride: pose == .swinging ? 47 : nil
+                    )
+                    context.setStrokeColor(NSColor.white.withAlphaComponent(0.95).cgColor)
+                    context.setLineWidth(1.5)
+                    context.move(to: hand)
+                    context.addLine(to: CGPoint(x: 55, y: 68))
+                    context.strokePath()
+                }
+                draw(style: .classic, pose: pose, webAngle: .pi / 3.2)
             }
             NSGraphicsContext.restoreGraphicsState()
 
-            let label = isHangingCard ? "悬挂待机" : style.title
-            label.draw(at: CGPoint(x: cardX + (isHangingCard ? 91 : 86), y: 50), withAttributes: [
+            let label = labels[index]
+            let labelWidth = (label as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 17, weight: .semibold)]).width
+            label.draw(at: CGPoint(x: cardX + (cardWidth - labelWidth) / 2, y: cardY + 20), withAttributes: [
                 .font: NSFont.systemFont(ofSize: 17, weight: .semibold),
                 .foregroundColor: NSColor.white
             ])
@@ -496,6 +1073,48 @@ enum HeroRenderer {
               let bitmap = NSBitmapImageRep(data: tiff),
               let png = bitmap.representation(using: .png, properties: [:]) else {
             throw NSError(domain: "SpideyCursor", code: 1, userInfo: [NSLocalizedDescriptionKey: "无法生成预览图"])
+        }
+        try png.write(to: URL(fileURLWithPath: path))
+    }
+
+    static func renderAppIcon(to path: String) throws {
+        let size = CGSize(width: 1024, height: 1024)
+        let image = NSImage(size: size)
+        image.lockFocus()
+
+        let tile = NSBezierPath(roundedRect: CGRect(x: 42, y: 42, width: 940, height: 940), xRadius: 218, yRadius: 218)
+        let gradient = NSGradient(colors: [
+            NSColor(calibratedRed: 0.035, green: 0.045, blue: 0.16, alpha: 1),
+            NSColor(calibratedRed: 0.12, green: 0.08, blue: 0.3, alpha: 1)
+        ])!
+        gradient.draw(in: tile, angle: -55)
+        NSColor(calibratedRed: 0.3, green: 0.42, blue: 1, alpha: 0.45).setStroke()
+        tile.lineWidth = 18
+        tile.stroke()
+
+        NSGraphicsContext.saveGraphicsState()
+        let context = NSGraphicsContext.current!.cgContext
+        context.translateBy(x: 512, y: 535)
+        context.setStrokeColor(NSColor.white.withAlphaComponent(0.13).cgColor)
+        context.setLineWidth(7)
+        for index in 0..<12 {
+            let angle = CGFloat(index) * 2 * .pi / 12
+            context.move(to: .zero)
+            context.addLine(to: CGPoint(x: cos(angle) * 390, y: sin(angle) * 390))
+            context.strokePath()
+        }
+        for radius in [118, 230, 350] as [CGFloat] {
+            context.strokeEllipse(in: CGRect(x: -radius, y: -radius, width: radius * 2, height: radius * 2))
+        }
+        context.scaleBy(x: 9.1, y: 9.1)
+        draw(style: .classic, pose: .idle)
+        NSGraphicsContext.restoreGraphicsState()
+
+        image.unlockFocus()
+        guard let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff),
+              let png = bitmap.representation(using: .png, properties: [:]) else {
+            throw NSError(domain: "SpideyCursor", code: 2, userInfo: [NSLocalizedDescriptionKey: "无法生成应用图标"])
         }
         try png.write(to: URL(fileURLWithPath: path))
     }
@@ -772,8 +1391,11 @@ final class OverlayView: NSView {
             for index in 1..<trail.count {
                 let from = trail[index - 1]
                 let to = trail[index]
-                context.setStrokeColor(NSColor(calibratedRed: 1, green: 0.2, blue: 0.4, alpha: to.life * 0.22).cgColor)
-                context.setLineWidth(2 + to.life * 2.5)
+                let color = index.isMultiple(of: 2)
+                    ? NSColor(calibratedRed: 1, green: 0.16, blue: 0.28, alpha: to.life * 0.24)
+                    : NSColor(calibratedRed: 0.18, green: 0.42, blue: 1, alpha: to.life * 0.2)
+                context.setStrokeColor(color.cgColor)
+                context.setLineWidth(1.5 + to.life * 2.2)
                 context.move(to: from.point)
                 context.addLine(to: to.point)
                 context.strokePath()
@@ -781,6 +1403,9 @@ final class OverlayView: NSView {
             context.restoreGState()
         }
 
+        let idlePhase = CGFloat(CACurrentMediaTime().truncatingRemainder(dividingBy: 2.4) / 2.4) * 2 * .pi
+        let idleBob = mode == .idle ? sin(idlePhase) * 0.7 : 0
+        let renderPosition = CGPoint(x: heroPosition.x, y: heroPosition.y + idleBob)
         let heroRotation = heroAngle * .pi / 180
         let webDelta = CGPoint(x: targetPoint.x - heroPosition.x, y: targetPoint.y - heroPosition.y)
         let worldWebAngle: CGFloat = hypot(webDelta.x, webDelta.y) > 1
@@ -788,30 +1413,40 @@ final class OverlayView: NSView {
             : .pi / 3
         let localWebAngle = worldWebAngle - heroRotation
         let displayScale = heroScale * 0.75
-        let localHand = HeroRenderer.webHandPoint(style: heroStyle, webAngle: localWebAngle)
+        let swingArmLength: CGFloat? = mode == .swinging && heroStyle == .classic ? 47 : nil
+        let localHand = HeroRenderer.webHandPoint(style: heroStyle, webAngle: localWebAngle, lengthOverride: swingArmLength)
         let scaledHand = CGPoint(x: localHand.x * displayScale, y: localHand.y * displayScale)
         let worldHand = CGPoint(
-            x: heroPosition.x + scaledHand.x * cos(heroRotation) - scaledHand.y * sin(heroRotation),
-            y: heroPosition.y + scaledHand.x * sin(heroRotation) + scaledHand.y * cos(heroRotation)
+            x: renderPosition.x + scaledHand.x * cos(heroRotation) - scaledHand.y * sin(heroRotation),
+            y: renderPosition.y + scaledHand.x * sin(heroRotation) + scaledHand.y * cos(heroRotation)
         )
 
         if mode == .aiming || mode == .swinging {
             drawWeb(context: context, start: worldHand)
             drawAnchorWeb(context: context)
+            if mode == .aiming { drawWristFlash(context: context, at: worldHand, angle: worldWebAngle) }
+        } else if mode == .landing {
+            drawLandingBurst(context: context)
         }
 
         context.saveGState()
-        context.translateBy(x: heroPosition.x, y: heroPosition.y)
+        context.translateBy(x: renderPosition.x, y: renderPosition.y)
         context.rotate(by: heroRotation)
         context.scaleBy(x: displayScale, y: displayScale)
-        let pose: HeroPose = mode == .aiming ? .firing : (mode == .swinging ? .swinging : .idle)
+        let pose: HeroPose
+        switch mode {
+        case .aiming: pose = .firing
+        case .swinging: pose = .swinging
+        case .landing: pose = .landing
+        case .idle: pose = .idle
+        }
         HeroRenderer.draw(style: heroStyle, pose: pose, webAngle: localWebAngle)
         context.restoreGState()
     }
 
     private func drawHangingIdle(context: CGContext) {
         let hangingScale: CGFloat = 0.86
-        let handPoint = CGPoint(x: heroPosition.x, y: heroPosition.y + 41 * hangingScale)
+        let handPoint = CGPoint(x: heroPosition.x, y: heroPosition.y + 49 * hangingScale)
 
         context.saveGState()
         context.setLineCap(.round)
@@ -891,6 +1526,67 @@ final class OverlayView: NSView {
             context.setLineWidth(offset < 0 ? 2.1 : 0.9)
             context.strokePath()
         }
+
+        // 两股主丝之间加入细小横向连接，形成编织蛛丝，而不是一根发光直线。
+        for sample in stride(from: CGFloat(0.14), through: 0.88, by: 0.105) {
+            let point = quadratic(hand, center, targetPoint, sample)
+            let tangent = CGPoint(
+                x: 2 * (1 - sample) * (center.x - hand.x) + 2 * sample * (targetPoint.x - center.x),
+                y: 2 * (1 - sample) * (center.y - hand.y) + 2 * sample * (targetPoint.y - center.y)
+            )
+            let tangentLength = max(1, hypot(tangent.x, tangent.y))
+            let sampleNormal = CGPoint(x: -tangent.y / tangentLength, y: tangent.x / tangentLength)
+            let halfWidth: CGFloat = sample.truncatingRemainder(dividingBy: 0.21) < 0.105 ? 2.7 : 2.1
+            context.move(to: CGPoint(x: point.x - sampleNormal.x * halfWidth, y: point.y - sampleNormal.y * halfWidth))
+            context.addLine(to: CGPoint(x: point.x + sampleNormal.x * halfWidth, y: point.y + sampleNormal.y * halfWidth))
+            context.setStrokeColor(NSColor.white.withAlphaComponent(0.72).cgColor)
+            context.setLineWidth(0.72)
+            context.strokePath()
+        }
+
+        let pulse = CGFloat(CACurrentMediaTime().truncatingRemainder(dividingBy: 0.8) / 0.8)
+        let pulsePoint = quadratic(hand, center, targetPoint, pulse)
+        context.setShadow(offset: .zero, blur: 7, color: NSColor.white.cgColor)
+        context.setFillColor(NSColor.white.cgColor)
+        context.fillEllipse(in: CGRect(x: pulsePoint.x - 1.8, y: pulsePoint.y - 1.8, width: 3.6, height: 3.6))
+        context.restoreGState()
+    }
+
+    private func drawWristFlash(context: CGContext, at point: CGPoint, angle: CGFloat) {
+        context.saveGState()
+        context.translateBy(x: point.x, y: point.y)
+        context.rotate(by: angle)
+        context.setStrokeColor(NSColor.white.withAlphaComponent(0.88).cgColor)
+        context.setLineCap(.round)
+        for index in 0..<5 {
+            let ray = CGFloat(index - 2) * 0.22
+            context.setLineWidth(index == 2 ? 1.7 : 0.85)
+            context.move(to: CGPoint(x: 1.5, y: 0))
+            context.addLine(to: CGPoint(x: 8 + CGFloat(abs(index - 2)), y: ray * 11))
+            context.strokePath()
+        }
+        context.restoreGState()
+    }
+
+    private func drawLandingBurst(context: CGContext) {
+        let progress = clamp(CGFloat((CACurrentMediaTime() - startedAt) / max(duration, 0.01)), 0, 1)
+        let alpha = pow(1 - progress, 2)
+        let radius = 12 + progress * 28
+        context.saveGState()
+        context.translateBy(x: heroPosition.x, y: heroPosition.y - 17)
+        context.setStrokeColor(NSColor.white.withAlphaComponent(alpha * 0.82).cgColor)
+        context.setLineCap(.round)
+        for index in 0..<10 {
+            let angle = CGFloat(index) * 2 * .pi / 10
+            let inner = CGPoint(x: cos(angle) * radius * 0.55, y: sin(angle) * radius * 0.32)
+            let outer = CGPoint(x: cos(angle) * radius, y: sin(angle) * radius * 0.56)
+            context.setLineWidth(index.isMultiple(of: 2) ? 1.6 : 0.8)
+            context.move(to: inner)
+            context.addLine(to: outer)
+            context.strokePath()
+        }
+        context.setLineWidth(0.9)
+        context.strokeEllipse(in: CGRect(x: -radius * 0.7, y: -radius * 0.26, width: radius * 1.4, height: radius * 0.52))
         context.restoreGState()
     }
 
@@ -924,6 +1620,10 @@ final class OverlayView: NSView {
         }
         context.setFillColor(NSColor.white.cgColor)
         context.fillEllipse(in: CGRect(x: -3, y: -3, width: 6, height: 6))
+        for index in stride(from: 0, to: spokeCount, by: 2) {
+            let point = points[index]
+            context.fillEllipse(in: CGRect(x: point.x - 1.7, y: point.y - 1.7, width: 3.4, height: 3.4))
+        }
         context.restoreGState()
     }
 }
@@ -1043,30 +1743,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
     }
 
+    private func makeMenuBarIcon() -> NSImage {
+        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { rect in
+            let mask = NSBezierPath(ovalIn: CGRect(x: 2.3, y: 1.4, width: 13.4, height: 15.2))
+            NSColor.black.setFill()
+            mask.fill()
+
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current?.compositingOperation = .clear
+            let leftEye = NSBezierPath()
+            leftEye.move(to: CGPoint(x: 4.2, y: 10.7))
+            leftEye.curve(to: CGPoint(x: 8, y: 12.7), controlPoint1: CGPoint(x: 5.2, y: 12.7), controlPoint2: CGPoint(x: 6.8, y: 13.3))
+            leftEye.curve(to: CGPoint(x: 4.2, y: 10.7), controlPoint1: CGPoint(x: 7.9, y: 8.8), controlPoint2: CGPoint(x: 5.5, y: 8.1))
+            leftEye.fill()
+            let rightEye = NSBezierPath()
+            rightEye.move(to: CGPoint(x: 13.8, y: 10.7))
+            rightEye.curve(to: CGPoint(x: 10, y: 12.7), controlPoint1: CGPoint(x: 12.8, y: 12.7), controlPoint2: CGPoint(x: 11.2, y: 13.3))
+            rightEye.curve(to: CGPoint(x: 13.8, y: 10.7), controlPoint1: CGPoint(x: 10.1, y: 8.8), controlPoint2: CGPoint(x: 12.5, y: 8.1))
+            rightEye.fill()
+            NSGraphicsContext.restoreGraphicsState()
+
+            NSColor.black.withAlphaComponent(0.72).setStroke()
+            for x in [6.3, 9, 11.7] as [CGFloat] {
+                let web = NSBezierPath()
+                web.move(to: CGPoint(x: 9, y: 9.2))
+                web.line(to: CGPoint(x: x, y: 15.2))
+                web.lineWidth = 0.55
+                web.stroke()
+            }
+            let ring = NSBezierPath(ovalIn: CGRect(x: 5.1, y: 6.3, width: 7.8, height: 6.4))
+            ring.lineWidth = 0.5
+            ring.stroke()
+            return true
+        }
+        image.isTemplate = true
+        image.accessibilityDescription = "蛛网小英雄"
+        return image
+    }
+
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "cursorarrow.motionlines", accessibilityDescription: "蛛网小英雄")
-            if button.image == nil { button.title = "🕸" }
+            button.image = makeMenuBarIcon()
+            button.imagePosition = .imageOnly
         }
 
         let menu = NSMenu()
         let title = NSMenuItem(title: "蛛网小英雄", action: nil, keyEquivalent: "")
         title.isEnabled = false
+        title.image = makeMenuBarIcon()
         menu.addItem(title)
 
         toggleItem = NSMenuItem(title: "启用桌面动画", action: #selector(toggleEnabled), keyEquivalent: "")
         toggleItem.target = self
         toggleItem.state = .on
+        toggleItem.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: nil)
         menu.addItem(toggleItem)
 
         hangingItem = NSMenuItem(title: "悬挂待机（下拉可挣脱）", action: #selector(toggleHangingIdle), keyEquivalent: "")
         hangingItem.target = self
         hangingItem.state = UserDefaults.standard.bool(forKey: "hangingIdle") ? .on : .off
+        hangingItem.image = NSImage(systemSymbolName: "arrow.down.to.line.compact", accessibilityDescription: nil)
         menu.addItem(hangingItem)
         menu.addItem(.separator())
 
         let styleParent = NSMenuItem(title: "角色样式", action: nil, keyEquivalent: "")
+        styleParent.image = NSImage(systemSymbolName: "person.crop.circle", accessibilityDescription: nil)
         let styleMenu = NSMenu()
         let selected = HeroStyle(rawValue: UserDefaults.standard.integer(forKey: "heroStyle")) ?? .classic
         for style in HeroStyle.allCases {
@@ -1082,6 +1824,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let relocate = NSMenuItem(title: "把角色移到鼠标位置", action: #selector(relocateHero), keyEquivalent: "")
         relocate.target = self
+        relocate.image = NSImage(systemSymbolName: "scope", accessibilityDescription: nil)
         menu.addItem(relocate)
 
         let permission = NSMenuItem(title: "请求辅助功能权限…", action: #selector(requestPermission), keyEquivalent: "")
@@ -1154,6 +1897,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--render-preview" {
     do {
         try HeroRenderer.renderPreview(to: CommandLine.arguments[2])
+        exit(EXIT_SUCCESS)
+    } catch {
+        fputs("\(error)\n", stderr)
+        exit(EXIT_FAILURE)
+    }
+} else if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--render-app-icon" {
+    do {
+        try HeroRenderer.renderAppIcon(to: CommandLine.arguments[2])
         exit(EXIT_SUCCESS)
     } catch {
         fputs("\(error)\n", stderr)
