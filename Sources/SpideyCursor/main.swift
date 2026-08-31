@@ -1130,6 +1130,7 @@ final class OverlayView: NSView {
     private var mode: MotionMode = .idle
     private var startPoint: CGPoint = .zero
     private var targetPoint: CGPoint = .zero
+    private var motionEndPoint: CGPoint = .zero
     private var controlPoint: CGPoint = .zero
     private var previousPoint: CGPoint = .zero
     private var startedAt: CFTimeInterval = 0
@@ -1140,12 +1141,21 @@ final class OverlayView: NSView {
     private var timer: Timer?
     private var isPullingHang = false
     private var isReturningToHang = false
+    private var pendingHangArrival = false
     private var pullReady = false
     private var pullDistance: CGFloat = 0
     private var pullPointerStart: CGPoint = .zero
     private var hangingRestPoint: CGPoint = .zero
-    private var hangingReturnFrom: CGPoint = .zero
+    private var hangingAnchorPoint: CGPoint = .zero
     private var hangingReturnStartedAt: CFTimeInterval = 0
+    private var hangingRopeLength: CGFloat = 82
+    private var hangingTargetLength: CGFloat = 82
+    private var hangingRopeVelocity: CGFloat = 0
+    private var hangingSwingAngle: CGFloat = 0
+    private var hangingTargetAngle: CGFloat = 0
+    private var hangingAngularVelocity: CGFloat = 0
+    private var pullSwingDirection: CGFloat = 1
+    private var hangEntryFlashUntil: CFTimeInterval = 0
 
     private let pullReleaseThreshold: CGFloat = 112
 
@@ -1178,6 +1188,7 @@ final class OverlayView: NSView {
         guard mode == .idle else { return }
         startPoint = heroPosition
         targetPoint = point
+        motionEndPoint = point
         previousPoint = heroPosition
         mode = .aiming
         needsDisplay = true
@@ -1203,6 +1214,7 @@ final class OverlayView: NSView {
         }
         guard mode == .aiming else { return }
         targetPoint = point
+        motionEndPoint = targetPoint
         let span = pointDistance(startPoint, targetPoint)
         duration = CFTimeInterval(span < 20 ? 0.35 : clamp(0.48 + span * 0.0011, 0.5, 1.05))
         controlPoint = span < 20
@@ -1230,6 +1242,7 @@ final class OverlayView: NSView {
         heroPosition = point
         startPoint = point
         targetPoint = point
+        motionEndPoint = point
         previousPoint = point
         mode = .idle
         heroAngle = 0
@@ -1238,35 +1251,75 @@ final class OverlayView: NSView {
     }
 
     func setHangingIdle(_ enabled: Bool) {
-        isHangingIdle = enabled
         isPullingHang = false
         isReturningToHang = false
         pullReady = false
         pullDistance = 0
-        mode = .idle
+        hangingRopeVelocity = 0
+        hangingAngularVelocity = 0
         heroAngle = 0
         heroScale = 1
         trail.removeAll()
+
         if enabled {
-            heroPosition = CGPoint(x: bounds.midX, y: bounds.maxY - 82)
-            hangingRestPoint = heroPosition
+            // 先从当前位置向屏幕上沿发射蛛丝，再沿一条有下坠感的弧线荡到倒挂位。
+            isHangingIdle = false
+            pendingHangArrival = true
+            startPoint = heroPosition
+            hangingRestPoint = CGPoint(x: bounds.midX, y: bounds.maxY - 82)
+            hangingAnchorPoint = CGPoint(x: hangingRestPoint.x, y: bounds.maxY)
+            hangingRopeLength = hangingAnchorPoint.y - hangingRestPoint.y
+            hangingTargetLength = hangingRopeLength
+            hangingSwingAngle = 0
+            hangingTargetAngle = 0
+            targetPoint = hangingAnchorPoint
+            motionEndPoint = hangingRestPoint
+
+            let span = pointDistance(startPoint, hangingRestPoint)
+            let direction: CGFloat = startPoint.x <= hangingRestPoint.x ? 1 : -1
+            controlPoint = CGPoint(
+                x: (startPoint.x + hangingRestPoint.x) / 2 + direction * min(92, 38 + span * 0.12),
+                y: min(startPoint.y, hangingRestPoint.y) - min(140, 38 + span * 0.18)
+            )
+            previousPoint = startPoint
+            startedAt = CACurrentMediaTime()
+            hangEntryFlashUntil = startedAt + 0.16
+            duration = CFTimeInterval(clamp(0.58 + span * 0.0011, 0.62, 1.12))
+            mode = .swinging
+        } else {
+            isHangingIdle = false
+            pendingHangArrival = false
+            mode = .idle
             startPoint = heroPosition
             targetPoint = heroPosition
+            motionEndPoint = heroPosition
             previousPoint = heroPosition
         }
         needsDisplay = true
     }
 
     private func beginHangingPull(at point: CGPoint) {
-        guard !isReturningToHang else { return }
         let hitX = abs(point.x - heroPosition.x) <= 38
         let hitY = point.y >= heroPosition.y - 36 && point.y <= heroPosition.y + 48
         guard hitX, hitY else { return }
+        let wasReturning = isReturningToHang
         isPullingHang = true
+        isReturningToHang = false
         pullReady = false
         pullDistance = 0
         pullPointerStart = point
-        hangingRestPoint = heroPosition
+        hangingRopeLength = max(48, pointDistance(hangingAnchorPoint, heroPosition))
+        hangingTargetLength = hangingRopeLength
+        hangingSwingAngle = atan2(
+            heroPosition.x - hangingAnchorPoint.x,
+            max(1, hangingAnchorPoint.y - heroPosition.y)
+        )
+        hangingTargetAngle = hangingSwingAngle
+        if !wasReturning {
+            hangingRopeVelocity = 0
+            hangingAngularVelocity = 0
+        }
+        pullSwingDirection = point.x >= heroPosition.x ? 1 : -1
         needsDisplay = true
     }
 
@@ -1275,12 +1328,21 @@ final class OverlayView: NSView {
         let rawPull = max(0, pullPointerStart.y - point.y)
         pullDistance = min(rawPull, 168)
         pullReady = rawPull >= pullReleaseThreshold
-        let sideways = clamp((point.x - pullPointerStart.x) * 0.28, -42, 42)
-        heroPosition = CGPoint(
-            x: hangingRestPoint.x + sideways,
-            y: hangingRestPoint.y - pullDistance
+        let baseLength = max(48, hangingAnchorPoint.y - hangingRestPoint.y)
+        let stretchedLength = baseLength + pullDistance * 0.77
+        let progress = clamp(pullDistance / pullReleaseThreshold, 0, 1.25)
+        let pointerAngle = clamp(
+            (point.x - pullPointerStart.x) / max(120, stretchedLength),
+            -0.38,
+            0.38
         )
-        heroScale = 1 + min(0.08, pullDistance / 1_600)
+        // 保留轻微自然侧摆，但控制幅度，避免下拉时像弹簧玩具一样过度晃动。
+        let naturalArc = pullSwingDirection * sin(min(1, progress) * .pi * 0.62) * 0.17
+        hangingTargetAngle = clamp(pointerAngle + naturalArc, -0.56, 0.56)
+        hangingTargetLength = stretchedLength
+        if abs(hangingTargetAngle) > 0.035 {
+            pullSwingDirection = hangingTargetAngle >= 0 ? 1 : -1
+        }
         needsDisplay = true
     }
 
@@ -1292,19 +1354,31 @@ final class OverlayView: NSView {
         if pullReady {
             isHangingIdle = false
             isReturningToHang = false
+            pendingHangArrival = false
             pullReady = false
             pullDistance = 0
-            heroScale = 1.12
-            heroAngle = 0
             startPoint = heroPosition
-            targetPoint = heroPosition
+            targetPoint = hangingAnchorPoint
+            let direction: CGFloat = abs(hangingSwingAngle) > 0.035
+                ? (hangingSwingAngle >= 0 ? 1 : -1)
+                : pullSwingDirection
+            motionEndPoint = CGPoint(
+                x: clamp(heroPosition.x + direction * 108, bounds.minX + 56, bounds.maxX - 56),
+                y: max(bounds.minY + 76, heroPosition.y - 46)
+            )
+            controlPoint = CGPoint(
+                x: heroPosition.x + direction * 72,
+                y: min(heroPosition.y, motionEndPoint.y) - 42
+            )
             previousPoint = heroPosition
             startedAt = CACurrentMediaTime()
-            duration = 0.28
-            mode = .landing
+            duration = 0.58
+            heroScale = 1.06
+            mode = .swinging
             onHangingReleased?()
         } else {
-            hangingReturnFrom = heroPosition
+            hangingTargetLength = max(48, hangingAnchorPoint.y - hangingRestPoint.y)
+            hangingTargetAngle = 0
             hangingReturnStartedAt = CACurrentMediaTime()
             isReturningToHang = true
         }
@@ -1316,20 +1390,47 @@ final class OverlayView: NSView {
         let now = CACurrentMediaTime()
 
         if isHangingIdle {
-            if isReturningToHang {
-                let raw = CGFloat(clamp(CGFloat((now - hangingReturnStartedAt) / 0.34), 0, 1))
-                let eased = 1 - pow(1 - raw, 3)
+            if isPullingHang || isReturningToHang {
+                // 弹簧 + 阻尼：目标由鼠标控制，角色带一点惯性追随，松手后自然回摆。
+                let lengthStiffness: CGFloat = isPullingHang ? 0.25 : 0.14
+                let lengthDamping: CGFloat = isPullingHang ? 0.54 : 0.66
+                hangingRopeVelocity += (hangingTargetLength - hangingRopeLength) * lengthStiffness
+                hangingRopeVelocity *= lengthDamping
+                hangingRopeLength += hangingRopeVelocity
+
+                let angleStiffness: CGFloat = isPullingHang ? 0.20 : 0.11
+                let angleDamping: CGFloat = isPullingHang ? 0.58 : 0.73
+                hangingAngularVelocity += (hangingTargetAngle - hangingSwingAngle) * angleStiffness
+                hangingAngularVelocity *= angleDamping
+                hangingSwingAngle += hangingAngularVelocity
+
                 heroPosition = CGPoint(
-                    x: hangingReturnFrom.x + (hangingRestPoint.x - hangingReturnFrom.x) * eased,
-                    y: hangingReturnFrom.y + (hangingRestPoint.y - hangingReturnFrom.y) * eased + sin(raw * .pi) * 7
+                    x: hangingAnchorPoint.x + sin(hangingSwingAngle) * hangingRopeLength,
+                    y: hangingAnchorPoint.y - cos(hangingSwingAngle) * hangingRopeLength
                 )
-                heroScale = 1 + sin(raw * .pi) * 0.06
-                if raw >= 1 {
-                    heroPosition = hangingRestPoint
-                    heroScale = 1
-                    pullDistance = 0
-                    pullReady = false
-                    isReturningToHang = false
+                heroAngle = clamp(hangingSwingAngle * 180 / .pi * 0.62, -24, 24)
+                let stretch = max(0, hangingRopeLength - (hangingAnchorPoint.y - hangingRestPoint.y))
+                heroScale = 1 + min(0.052, stretch / 2_000)
+                previousPoint = heroPosition
+
+                if isReturningToHang {
+                    let returnAge = now - hangingReturnStartedAt
+                    let isSettled = abs(hangingTargetLength - hangingRopeLength) < 0.5
+                        && abs(hangingRopeVelocity) < 0.16
+                        && abs(hangingSwingAngle) < 0.006
+                        && abs(hangingAngularVelocity) < 0.0018
+                    if isSettled || returnAge >= 0.85 {
+                        heroPosition = hangingRestPoint
+                        hangingRopeLength = hangingTargetLength
+                        hangingSwingAngle = 0
+                        hangingRopeVelocity = 0
+                        hangingAngularVelocity = 0
+                        heroScale = 1
+                        heroAngle = 0
+                        pullDistance = 0
+                        pullReady = false
+                        isReturningToHang = false
+                    }
                 }
                 needsDisplay = true
             }
@@ -1339,7 +1440,7 @@ final class OverlayView: NSView {
         if mode == .swinging {
             let raw = CGFloat(clamp(CGFloat((now - startedAt) / duration), 0, 1))
             let eased = easeInOutCubic(raw)
-            let next = quadratic(startPoint, controlPoint, targetPoint, eased)
+            let next = quadratic(startPoint, controlPoint, motionEndPoint, eased)
             let velocity = CGPoint(x: next.x - previousPoint.x, y: next.y - previousPoint.y)
             heroPosition = next
             heroAngle = clamp(atan2(velocity.y, velocity.x) * 180 / .pi, -58, 58)
@@ -1351,13 +1452,30 @@ final class OverlayView: NSView {
             previousPoint = next
 
             if raw >= 1 {
-                heroPosition = targetPoint
-                previousPoint = targetPoint
+                heroPosition = motionEndPoint
+                previousPoint = motionEndPoint
                 heroAngle = 0
                 heroScale = 1
-                startedAt = now
-                duration = 0.2
-                mode = .landing
+                if pendingHangArrival {
+                    pendingHangArrival = false
+                    isHangingIdle = true
+                    heroPosition = hangingRestPoint
+                    previousPoint = hangingRestPoint
+                    targetPoint = hangingAnchorPoint
+                    motionEndPoint = hangingRestPoint
+                    hangingRopeLength = hangingAnchorPoint.y - hangingRestPoint.y
+                    hangingTargetLength = hangingRopeLength
+                    hangingSwingAngle = 0
+                    hangingTargetAngle = 0
+                    hangingRopeVelocity = 0
+                    hangingAngularVelocity = 0
+                    trail.removeAll()
+                    mode = .idle
+                } else {
+                    startedAt = now
+                    duration = 0.2
+                    mode = .landing
+                }
             }
         } else if mode == .landing {
             let value = CGFloat(clamp(CGFloat((now - startedAt) / duration), 0, 1))
@@ -1424,7 +1542,9 @@ final class OverlayView: NSView {
         if mode == .aiming || mode == .swinging {
             drawWeb(context: context, start: worldHand)
             drawAnchorWeb(context: context)
-            if mode == .aiming { drawWristFlash(context: context, at: worldHand, angle: worldWebAngle) }
+            if mode == .aiming || (pendingHangArrival && CACurrentMediaTime() <= hangEntryFlashUntil) {
+                drawWristFlash(context: context, at: worldHand, angle: worldWebAngle)
+            }
         } else if mode == .landing {
             drawLandingBurst(context: context)
         }
@@ -1446,25 +1566,31 @@ final class OverlayView: NSView {
 
     private func drawHangingIdle(context: CGContext) {
         let hangingScale: CGFloat = 0.86
-        let handPoint = CGPoint(x: heroPosition.x, y: heroPosition.y + 49 * hangingScale)
+        let heroRotation = heroAngle * .pi / 180
+        let localHandHeight = 49 * hangingScale
+        let handPoint = CGPoint(
+            x: heroPosition.x - sin(heroRotation) * localHandHeight,
+            y: heroPosition.y + cos(heroRotation) * localHandHeight
+        )
 
         context.saveGState()
         context.setLineCap(.round)
         context.setShadow(offset: .zero, blur: 5, color: NSColor.white.withAlphaComponent(0.58).cgColor)
         context.setStrokeColor(NSColor.white.cgColor)
         context.setLineWidth(2.1)
-        context.move(to: CGPoint(x: heroPosition.x, y: bounds.maxY))
+        context.move(to: hangingAnchorPoint)
         context.addLine(to: handPoint)
         context.strokePath()
         context.setStrokeColor(NSColor.white.withAlphaComponent(0.68).cgColor)
         context.setLineWidth(0.75)
-        context.move(to: CGPoint(x: heroPosition.x + 1.7, y: bounds.maxY))
+        context.move(to: CGPoint(x: hangingAnchorPoint.x + 1.7, y: hangingAnchorPoint.y))
         context.addLine(to: CGPoint(x: handPoint.x + 1.7, y: handPoint.y))
         context.strokePath()
         context.restoreGState()
 
         context.saveGState()
         context.translateBy(x: heroPosition.x, y: heroPosition.y)
+        context.rotate(by: heroRotation)
         context.scaleBy(x: hangingScale, y: hangingScale)
         HeroRenderer.draw(style: heroStyle, pose: .hanging)
         context.restoreGState()
