@@ -1194,6 +1194,24 @@ final class OverlayView: NSView {
         needsDisplay = true
     }
 
+    func isHangingHeroHit(at point: CGPoint) -> Bool {
+        guard isEffectEnabled, isHangingIdle else { return false }
+        let hitX = abs(point.x - heroPosition.x) <= 38
+        let hitY = point.y >= heroPosition.y - 36 && point.y <= heroPosition.y + 48
+        return hitX && hitY
+    }
+
+    func isHangingShortcutHit(at point: CGPoint) -> Bool {
+        guard isEffectEnabled,
+              !isHangingIdle,
+              !pendingHangArrival,
+              mode == .idle else { return false }
+        let restPoint = CGPoint(x: bounds.midX, y: bounds.maxY - 82)
+        let dx = (point.x - restPoint.x) / 68
+        let dy = (point.y - restPoint.y) / 58
+        return dx * dx + dy * dy <= 1
+    }
+
     func updateAim(to point: CGPoint) {
         if isHangingIdle {
             updateHangingPull(to: point)
@@ -1299,9 +1317,7 @@ final class OverlayView: NSView {
     }
 
     private func beginHangingPull(at point: CGPoint) {
-        let hitX = abs(point.x - heroPosition.x) <= 38
-        let hitY = point.y >= heroPosition.y - 36 && point.y <= heroPosition.y + 48
-        guard hitX, hitY else { return }
+        guard isHangingHeroHit(at: point) else { return }
         let wasReturning = isReturningToHang
         isPullingHang = true
         isReturningToHang = false
@@ -1846,10 +1862,76 @@ final class OverlayController {
     }
 }
 
+final class MouseEventTap {
+    typealias Handler = (NSEvent.EventType, CGPoint) -> Bool
+
+    private let handler: Handler
+    private var eventTap: CFMachPort?
+    private var runLoopSource: CFRunLoopSource?
+
+    init?(handler: @escaping Handler) {
+        self.handler = handler
+
+        let mask = (CGEventMask(1) << CGEventType.leftMouseDown.rawValue)
+            | (CGEventMask(1) << CGEventType.leftMouseDragged.rawValue)
+            | (CGEventMask(1) << CGEventType.leftMouseUp.rawValue)
+        let context = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: mask,
+            callback: { _, type, event, userInfo in
+                guard let userInfo else { return Unmanaged.passUnretained(event) }
+                let monitor = Unmanaged<MouseEventTap>.fromOpaque(userInfo).takeUnretainedValue()
+
+                if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                    if let eventTap = monitor.eventTap {
+                        CGEvent.tapEnable(tap: eventTap, enable: true)
+                    }
+                    return Unmanaged.passUnretained(event)
+                }
+
+                let nsType: NSEvent.EventType
+                switch type {
+                case .leftMouseDown: nsType = .leftMouseDown
+                case .leftMouseDragged: nsType = .leftMouseDragged
+                case .leftMouseUp: nsType = .leftMouseUp
+                default: return Unmanaged.passUnretained(event)
+                }
+
+                let shouldConsume = monitor.handler(nsType, NSEvent.mouseLocation)
+                return shouldConsume ? nil : Unmanaged.passUnretained(event)
+            },
+            userInfo: context
+        ) else { return nil }
+
+        eventTap = tap
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        runLoopSource = source
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+    }
+
+    deinit {
+        if let eventTap { CGEvent.tapEnable(tap: eventTap, enable: false) }
+        if let runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes) }
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private enum CapturedGesture {
+        case none
+        case hangingPull
+        case hangingShortcut
+    }
+
     private var statusItem: NSStatusItem!
     private var overlay: OverlayController!
-    private var globalMonitor: Any?
+    private var eventTap: MouseEventTap?
+    private var fallbackGlobalMonitor: Any?
+    private var capturedGesture: CapturedGesture = .none
+    private var capturedStartPoint: CGPoint = .zero
     private var enabled = true
     private var toggleItem: NSMenuItem!
     private var hangingItem: NSMenuItem!
@@ -1866,7 +1948,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
+        eventTap = nil
+        if let fallbackGlobalMonitor { NSEvent.removeMonitor(fallbackGlobalMonitor) }
     }
 
     private func makeMenuBarIcon() -> NSImage {
@@ -1959,7 +2042,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
-        let note = NSMenuItem(title: "点击仍会传给原来的应用", action: nil, keyEquivalent: "")
+        let note = NSMenuItem(title: "普通点击会透传；拖动角色与待机热区由本应用接管", action: nil, keyEquivalent: "")
         note.isEnabled = false
         menu.addItem(note)
 
@@ -1970,25 +2053,77 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func installMouseMonitor() {
-        let mask: NSEvent.EventTypeMask = [.leftMouseDown, .leftMouseDragged, .leftMouseUp]
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
-            let eventType = event.type
-            let point = NSEvent.mouseLocation
-            DispatchQueue.main.async { [weak self] in
-                self?.handleMouse(eventType, globalPoint: point)
+        eventTap = MouseEventTap { [weak self] type, point in
+            self?.handleMouse(type, globalPoint: point) ?? false
+        }
+
+        // 未获得辅助功能权限时仍保留原来的观察模式；授权并重启后会自动切换为可拦截模式。
+        if eventTap == nil {
+            let mask: NSEvent.EventTypeMask = [.leftMouseDown, .leftMouseDragged, .leftMouseUp]
+            fallbackGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
+                let eventType = event.type
+                let point = NSEvent.mouseLocation
+                DispatchQueue.main.async { [weak self] in
+                    _ = self?.handleMouse(eventType, globalPoint: point)
+                }
             }
         }
     }
 
-    private func handleMouse(_ type: NSEvent.EventType, globalPoint: CGPoint) {
+    @discardableResult
+    private func handleMouse(_ type: NSEvent.EventType, globalPoint: CGPoint) -> Bool {
         guard enabled,
               let point = overlay.localPoint(from: globalPoint),
-              let view = overlay.view else { return }
+              let view = overlay.view else { return false }
+
         switch type {
-        case .leftMouseDown: view.beginAim(at: point)
-        case .leftMouseDragged: view.updateAim(to: point)
-        case .leftMouseUp: view.releaseAim(at: point)
-        default: break
+        case .leftMouseDown:
+            capturedStartPoint = point
+            if view.isHangingHeroHit(at: point) {
+                capturedGesture = .hangingPull
+                view.beginAim(at: point)
+                return true
+            }
+            if view.isHangingShortcutHit(at: point) {
+                capturedGesture = .hangingShortcut
+                return true
+            }
+            capturedGesture = .none
+            view.beginAim(at: point)
+            return false
+
+        case .leftMouseDragged:
+            switch capturedGesture {
+            case .hangingPull:
+                view.updateAim(to: point)
+                return true
+            case .hangingShortcut:
+                return true
+            case .none:
+                view.updateAim(to: point)
+                return false
+            }
+
+        case .leftMouseUp:
+            let captured = capturedGesture
+            capturedGesture = .none
+            switch captured {
+            case .hangingPull:
+                view.releaseAim(at: point)
+                return true
+            case .hangingShortcut:
+                if pointDistance(capturedStartPoint, point) <= 18 {
+                    hangingItem.state = .on
+                    overlay.setHangingIdle(true)
+                }
+                return true
+            case .none:
+                view.releaseAim(at: point)
+                return false
+            }
+
+        default:
+            return false
         }
     }
 
